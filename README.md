@@ -206,7 +206,6 @@ OCR runs on your computer. Cards and searches use these online services. The sel
 | `locale_profile.py` | Reads your language, currency and units |
 | `kwin-grab.c` | Takes a screenshot through KWin's D-Bus interface |
 | `io.github.styanr.search.desktop` | Desktop file. Needed on GNOME for the screenshot permission |
-| `examples/test-page.html` | A page with examples of every kind of selection, for testing |
 
 ## Limitations
 
