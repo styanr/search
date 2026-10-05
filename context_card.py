@@ -379,6 +379,8 @@ class CardFetcher(QObject):
                 route = Route("not_text")
             self.routed.emit(token, route)
             card = lookup(text, route)
+            if card is None:
+                print(f"context: no card for {text!r} (routed as {route.kind}, text {route.text!r})", file=sys.stderr)
             self.ready.emit(token, card)
             if card is not None and card.facts and token == self.token:
                 enrich(card.facts, lambda extra: self.extra.emit(token, extra))
