@@ -1,4 +1,4 @@
-# circle-search
+# search
 
 Circle to Search for the Linux desktop. Press a shortcut, circle or tap something on the screen, and search for it on Google or Google Lens. For short selections, the app also shows cards with extra information.
 
@@ -56,8 +56,8 @@ Other OCR languages use the package name `tesseract-langpack-<code>`, for exampl
 1. Clone the repository:
 
    ```
-   git clone https://github.com/styanr/circle-search.git
-   cd circle-search
+   git clone https://github.com/styanr/search.git
+   cd search
    ```
 
 2. Build the screenshot helper:
@@ -72,7 +72,7 @@ Other OCR languages use the package name `tesseract-langpack-<code>`, for exampl
    [Desktop Entry]
    Type=Application
    Name=Circle to Search screenshot helper
-   Exec=/home/you/circle-search/kwin-grab
+   Exec=/home/you/search/kwin-grab
    NoDisplay=true
    X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
    ```
@@ -84,7 +84,7 @@ Other OCR languages use the package name `tesseract-langpack-<code>`, for exampl
 4. Add a keyboard shortcut. Open System Settings → Keyboard → Shortcuts → Add New → Command or Script. Use this command, with your path:
 
    ```
-   python3 /home/you/circle-search/circle_search.py
+   python3 /home/you/search/circle_search.py
    ```
 
    Then choose a key, for example Meta+S.
