@@ -4,6 +4,10 @@
 
 Circle to Search for the Linux desktop. Press a shortcut, circle or tap something on the screen, and search for it on Google or Google Lens. For short selections, the app also shows cards with extra information.
 
+![Circling "Kyoto" on a Wikipedia page shows a search bar and cards with a map, weather, facts and places nearby](docs/preview.gif)
+
+The page in the preview is the Wikipedia article [Kyoto](https://en.wikipedia.org/wiki/Kyoto) (CC BY-SA 4.0).
+
 It is made for KDE Plasma 6 on Wayland. GNOME on Wayland is supported through the screenshot portal, but it is not tested on GNOME yet.
 
 ## How it works
