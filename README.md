@@ -1,3 +1,5 @@
+> ‼️ AI SLOP WARNING
+
 # search
 
 Circle to Search for the Linux desktop. Press a shortcut, circle or tap something on the screen, and search for it on Google or Google Lens. For short selections, the app also shows cards with extra information.
