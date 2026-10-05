@@ -4,7 +4,7 @@
 
 Circle to Search for the Linux desktop. Press a shortcut, circle or tap something on the screen, and search for it on Google or Google Lens. For short selections, the app also shows cards with extra information.
 
-It is made for KDE Plasma 6 on Wayland. Other desktops can work, with slower screenshots, but they are not tested.
+It is made for KDE Plasma 6 on Wayland. GNOME on Wayland is supported through the screenshot portal, but it is not tested on GNOME yet.
 
 ## How it works
 
@@ -37,13 +37,14 @@ Names in other scripts (for example "Львів" or "東京") are found on the W
 
 ## Requirements
 
-- KDE Plasma 6 on Wayland
+- KDE Plasma 6 or GNOME, on Wayland
 - Python 3.10 or newer
 - PyQt6
 - Tesseract OCR with the English language pack, and packs for other languages you want to read
 - Hunspell English dictionary (used to tell words from names)
 - `wl-clipboard` (for copying on Wayland)
-- `gcc` and GLib development files (to build the screenshot helper)
+- On KDE: `gcc` and GLib development files (to build the screenshot helper)
+- On GNOME: `xdg-desktop-portal` and `xdg-desktop-portal-gnome`. These are installed with GNOME.
 
 On Fedora:
 
@@ -53,7 +54,15 @@ sudo dnf install python3-pyqt6 tesseract tesseract-langpack-eng hunspell-en-US w
 
 Other OCR languages use the package name `tesseract-langpack-<code>`, for example `tesseract-langpack-ukr` or `tesseract-langpack-deu`.
 
-## Install
+On Ubuntu and Debian:
+
+```
+sudo apt install python3-pyqt6 tesseract-ocr tesseract-ocr-eng hunspell-en-us wl-clipboard
+```
+
+Other OCR languages use the package name `tesseract-ocr-<code>`, for example `tesseract-ocr-ukr`.
+
+## Install on KDE Plasma
 
 1. Clone the repository:
 
@@ -90,6 +99,43 @@ Other OCR languages use the package name `tesseract-langpack-<code>`, for exampl
    ```
 
    Then choose a key, for example Meta+S.
+
+## Install on GNOME
+
+1. Clone the repository:
+
+   ```
+   git clone https://github.com/styanr/search.git
+   cd search
+   ```
+
+2. Install the desktop file. The screenshot portal uses it to know the app. Change the path in `Exec` to where you cloned the repository, then copy the file:
+
+   ```
+   cp io.github.styanr.search.desktop ~/.local/share/applications/
+   ```
+
+3. Add a keyboard shortcut. Open Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → Add Shortcut. Use this command, with your path:
+
+   ```
+   python3 /home/you/search/circle_search.py
+   ```
+
+   Then choose a key, for example Super+S.
+
+4. The first time you use the shortcut, GNOME asks "Allow Circle to Search to Take Screenshots?". Choose Allow. GNOME saves the answer, Allow or Deny, and does not ask again.
+
+   To remove the saved answer, so that GNOME asks again:
+
+   ```
+   busctl --user call org.freedesktop.impl.portal.PermissionStore /org/freedesktop/impl/portal/PermissionStore org.freedesktop.impl.portal.PermissionStore DeletePermission sss screenshot screenshot io.github.styanr.search
+   ```
+
+### How screenshots work on GNOME
+
+GNOME does not let other programs use its own screenshot interface. The app uses the screenshot portal (`org.freedesktop.portal.Screenshot`) instead. The portal saves the permission for an app ID. To have its own ID, the app moves itself into a systemd scope named `app-io.github.styanr.search-<pid>.scope`, and on xdg-desktop-portal 1.20 or newer it also registers the ID with the portal. Without this, the permission is saved for all apps that have no ID.
+
+The portal saves the screenshot as a file. The app reads the file and deletes it.
 
 ## Use
 
@@ -159,11 +205,12 @@ OCR runs on your computer. Cards and searches use these online services. The sel
 | `card_views.py`, `card_shapes.py`, `card_tokens.py` | How each card looks |
 | `locale_profile.py` | Reads your language, currency and units |
 | `kwin-grab.c` | Takes a screenshot through KWin's D-Bus interface |
+| `io.github.styanr.search.desktop` | Desktop file. Needed on GNOME for the screenshot permission |
 | `examples/test-page.html` | A page with examples of every kind of selection, for testing |
 
 ## Limitations
 
-- Fast screenshots work only on KDE Plasma (KWin). Other desktops use Spectacle, grim or gnome-screenshot.
+- Fast screenshots work only on KDE Plasma (KWin). On GNOME and other desktops the app uses the screenshot portal.
 - Only the primary screen is used.
 - OCR can misread small text or text in fonts with unusual shapes. Check the text in the search bar if a card does not appear.
 - A name that is also a common word (for example "React") may show the dictionary meaning instead of the article.

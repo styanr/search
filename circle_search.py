@@ -17,12 +17,14 @@ import urllib.parse
 from dataclasses import dataclass
 
 from PyQt6.QtCore import (QEasingCurve, QLocale, QLockFile, QObject,
-                          QPointF, QRect, QRectF, QSize, QSizeF, Qt, QTimer, pyqtSignal)
+                          QEventLoop, QPointF, QRect, QRectF, QSize, QSizeF, Qt, QTimer, pyqtSignal,
+                          pyqtSlot)
 from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QFontDatabase,
                          QFontMetrics, QGuiApplication, QImage, QKeySequence,
                          QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap,
                          QRadialGradient, QShortcut)
 from PyQt6 import sip
+from PyQt6.QtDBus import QDBus, QDBusConnection, QDBusMessage
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QGraphicsOpacityEffect,
                              QHBoxLayout, QLineEdit, QWidget)
 
@@ -95,7 +97,90 @@ def finish_kwin_grab(proc):
     return image.copy()
 
 
+class PortalResponse(QObject):
+    def __init__(self, loop):
+        super().__init__()
+        self.loop, self.code, self.results = loop, None, {}
+
+    @pyqtSlot(QDBusMessage)
+    def response(self, message):
+        args = message.arguments()
+        self.code = args[0] if args else 2
+        self.results = args[1] if len(args) > 1 else {}
+        self.loop.quit()
+
+
+APP_ID = "io.github.styanr.search"
+
+
+def in_own_scope():
+    try:
+        with open("/proc/self/cgroup") as f:
+            return f"app-{APP_ID}-" in f.read()
+    except OSError:
+        return None
+
+
+def own_scope():
+    if in_own_scope() is not False or shutil.which("busctl") is None:
+        return
+    pid = str(os.getpid())
+    try:
+        subprocess.run(["busctl", "--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                        "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
+                        f"app-{APP_ID}-{pid}.scope", "fail", "1", "PIDs", "au", "1", pid, "0"],
+                       capture_output=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    deadline = time.monotonic() + 0.5
+    while not in_own_scope() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def grab_portal(timeout_ms=60000):
+    own_scope()
+    bus = QDBusConnection.connectToBus(QDBusConnection.BusType.SessionBus, "circle-search-portal")
+    if not bus.isConnected():
+        return None
+    register = QDBusMessage.createMethodCall("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                                             "org.freedesktop.host.portal.Registry", "Register")
+    register.setArguments([APP_ID, {}])
+    bus.call(register, QDBus.CallMode.Block, 3000)
+    token = f"circlesearch{os.getpid()}{int(time.monotonic() * 1000)}"
+    sender = bus.baseService().lstrip(":").replace(".", "_")
+    request = f"/org/freedesktop/portal/desktop/request/{sender}/{token}"
+    loop = QEventLoop()
+    receiver = PortalResponse(loop)
+    if not bus.connect("org.freedesktop.portal.Desktop", request, "org.freedesktop.portal.Request", "Response",
+                       receiver.response):
+        return None
+    call = QDBusMessage.createMethodCall("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                                         "org.freedesktop.portal.Screenshot", "Screenshot")
+    call.setArguments(["", {"handle_token": token, "interactive": False}])
+    reply = bus.call(call, QDBus.CallMode.Block, timeout_ms)
+    if reply.type() == QDBusMessage.MessageType.ErrorMessage:
+        return None
+    QTimer.singleShot(timeout_ms, loop.quit)
+    loop.exec()
+    uri = str(receiver.results.get("uri", "")) if receiver.code == 0 else ""
+    if not uri.startswith("file://"):
+        return None
+    path = urllib.parse.unquote(urllib.parse.urlsplit(uri).path)
+    image = QImage(path)
+    try:
+        if time.time() - os.path.getmtime(path) < 60:
+            os.unlink(path)
+    except OSError:
+        pass
+    return None if image.isNull() else image
+
+
 def grab_with_tool():
+    kde = "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+    if not kde:
+        image = grab_portal()
+        if image is not None:
+            return image
     commands = [
         ["spectacle", "-b", "-n", "-f", "-o"],
         ["grim"],
@@ -115,7 +200,7 @@ def grab_with_tool():
             image = QImage(path)
             if not image.isNull():
                 return image
-        return None
+        return grab_portal() if kde else None
     finally:
         os.unlink(path)
 

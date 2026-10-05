@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Circle to Search
+Comment=Circle anything on the screen to search for it
+Exec=python3 /path/to/search/circle_search.py
+Icon=edit-find
+Terminal=false
+Categories=Utility;
