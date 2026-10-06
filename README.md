@@ -202,14 +202,65 @@ OCR runs on your computer. Cards and searches use these online services. The sel
 
 | File | Contents |
 |---|---|
-| `circle_search.py` | The overlay, OCR, selection, search bar, card layout |
-| `context_card.py` | Decides what kind of selection it is, and looks up words, names and translations |
-| `card_data.py` | Card data model, money, units, dates, times, colours, phones, addresses, maps |
-| `providers.py` | Extra cards that build on the main card: weather, facts, currency, repository, nearby, trends, holidays, packages |
-| `card_views.py`, `card_shapes.py`, `card_tokens.py` | How each card looks |
-| `locale_profile.py` | Reads your language, currency and units |
+| `circle_search.py` | Starts the app |
+| `circlesearch/core/` | The app logic. It does not use Qt. |
+| `core/routing.py` | Decides what kind of selection it is (recognizers and routers) |
+| `core/pipeline.py` | Turns a selection into cards (resolvers and enrichers) |
+| `core/cards.py` | The base card types |
+| `core/ocr.py`, `core/textindex.py` | OCR engines and the words found on the screen |
+| `core/locale.py` | Your language, currency and units, and how to format them |
+| `core/actions.py` | Search, Lens, open and copy |
+| `circlesearch/plugins/` | One folder for each feature: weather, money, places and so on |
+| `circlesearch/ui/` | The Qt app: overlay, search bar, card board, card widgets, screenshots |
+| `circlesearch/cli.py` | Looks up text from the terminal: `python3 -m circlesearch.cli Kyoto` |
 | `kwin-grab.c` | Takes a screenshot through KWin's D-Bus interface |
 | `io.github.styanr.search.desktop` | Desktop file. Needed on GNOME for the screenshot permission |
+
+## Plugins
+
+Each folder in `circlesearch/plugins/` is a plugin. The app loads all of them at start. A plugin can add any of these:
+
+| Part | Decorator | What it does |
+|---|---|---|
+| Recognizer | `@recognizer(kind, order=…)` in `core.routing` | Finds a value in the text, for example a colour or a date |
+| Resolver | `@resolver(kind, …)` in `core.pipeline` | Makes the main card for a kind of selection |
+| Enricher | `@enricher(name, needs={…})` in `core.pipeline` | Makes extra cards from facts that other cards found, for example weather from `lat` and `lon` |
+| Card type | a `@dataclass` that extends `Card`, `TextCard` or `HeroCard` | The data that a card shows |
+| View | `@view(CardClass)` in `ui.cards`, in the plugin's `view.py` | How the card looks. Without a view, the card uses the generic text view. |
+
+`__init__.py` must not import Qt. Put Qt code in `view.py`. A view's `prepare(card)` runs off the main thread, so decode images there.
+
+A small plugin, `circlesearch/plugins/ip/__init__.py`:
+
+```python
+import ipaddress
+from dataclasses import dataclass
+
+from circlesearch.core.cards import TextCard
+from circlesearch.core.pipeline import resolver
+from circlesearch.core.routing import recognizer
+
+
+@dataclass(kw_only=True)
+class IpCard(TextCard):
+    kind = "ip"
+
+
+@recognizer("ip", order=5)
+def parse_ip(text):
+    try:
+        return ipaddress.ip_address(text.strip())
+    except ValueError:
+        return None
+
+
+@resolver("ip")
+def ip_card(route):
+    ip = route.value
+    return IpCard(title=str(ip), chips=[f"IPv{ip.version}", "private" if ip.is_private else "public"])
+```
+
+Screenshot backends (`ui/capture.py`), OCR engines (`core/ocr.py`) and routers (`core/routing.py`) use registries in the same way. If two plugins register the same name, the plugin that loads last wins. Plugins load in alphabetical order. If a plugin fails to load, the app skips it and prints the error.
 
 ## Limitations
 

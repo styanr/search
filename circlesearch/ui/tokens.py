@@ -9,7 +9,11 @@ def contrast(a, b):
     la, lb = sorted((lum(a), lum(b)), reverse=True); return (la + 0.05) / (lb + 0.05)
 
 SURFACE, SURFACE_HIGH, ON_SURFACE, ON_VAR, PRIMARY = "#1B1C21", "#2B2D35", "#ECEDF3", "#A6A9B4", "#A8C7FA"
+ON_PRIMARY = "#062E6F"
 BLUE, RED, YELLOW, GREEN = "#4285F4", "#EA4335", "#FBBC05", "#34A853"
+GOOGLE = [BLUE, RED, YELLOW, GREEN]
+SCRIM = "#06080E"
+HIGHLIGHT_LIGHT, HIGHLIGHT_DARK = "#C2D7FB", "#24406E"
 TINT = {
     "blue": mixh(SURFACE, BLUE, 0.11), "green": mixh(SURFACE, GREEN, 0.10),
     "red": mixh(SURFACE, RED, 0.09), "amber": mixh(SURFACE, YELLOW, 0.08), "neutral": SURFACE}
