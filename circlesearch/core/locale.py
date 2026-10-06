@@ -22,11 +22,18 @@ class Locale:
     def currency_symbol(self):
         return self.currency
 
-    def format_money(self, amount, symbol):
-        return f"{symbol}{amount:,.2f}"
+    def format_money(self, amount, symbol, decimals=2):
+        return f"{symbol}{amount:,.{decimals}f}"
 
     def format_number(self, value, decimals):
         return f"{value:.{decimals}f}"
+
+    def format_compact(self, n):
+        for size, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+            if abs(n) >= size:
+                v = n / size
+                return self.format_number(v, 0 if round(v, 1) == round(v) else 1) + suffix
+        return self.format_number(n, 0)
 
     def language_name(self, code):
         return code

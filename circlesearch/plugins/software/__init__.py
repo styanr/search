@@ -12,6 +12,7 @@ from circlesearch.core.pipeline import enricher
 class RepoCard(Card):
     kind = "repo"
     priority = 2
+    accent = "amber"
 
     description: str = ""
     stars: int | None = None
@@ -25,7 +26,7 @@ class RepoCard(Card):
 class PackageCard(Card):
     kind = "package"
     priority = 3
-    accent = "green"
+    accent = "amber"
 
     registry: str
     command: str

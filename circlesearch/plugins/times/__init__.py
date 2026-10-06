@@ -26,7 +26,7 @@ TIME = re.compile(r"^(?P<h>\d{1,2})(?:[:.](?P<m>\d{2}))?\s*(?P<ap>[ap]\.?\s?m\.?
 @dataclass(kw_only=True)
 class TimeCard(Card):
     kind = "time"
-    accent = "blue"
+    accent = "red"
 
     here: datetime
     there: datetime

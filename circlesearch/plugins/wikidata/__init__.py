@@ -8,7 +8,6 @@ from circlesearch.core.cards import Action, Card
 from circlesearch.core.locale import current
 from circlesearch.core.net import get_json
 from circlesearch.core.pipeline import enricher
-from circlesearch.core.text import compact
 
 WDQS = "https://query.wikidata.org/sparql?format=json&query="
 QLEVER = "https://qlever.dev/api/wikidata?query="
@@ -23,6 +22,7 @@ class FactsCard(Card):
     kind = "facts"
     priority = 2
     anchored = True
+    accent = "blue"
 
     rows: list[tuple[str, str]] = field(default_factory=list)
 
@@ -128,7 +128,7 @@ def wikidata_facts(facts):
     elif is_country:
         rows.append(("Capital", labels("P36", 1)))
         if first("P1082"):
-            rows.append(("Population", compact(float(first("P1082")))))
+            rows.append(("Population", current().format_compact(float(first("P1082")))))
         currencies = sorted(claims.get("P38", []), key=lambda c: (c[3] != "EUR", not c[3] or c[3].startswith("X")))
         if currencies:
             cq, cen, cuk, _ = currencies[0]
@@ -149,12 +149,12 @@ def wikidata_facts(facts):
         rows += [("Founded", year("P571") or ""), ("Headquarters", labels("P159", 1)),
                  ("Chief executive", labels("P169", 1))]
         if first("P1128"):
-            rows.append(("Employees", compact(float(first("P1128")))))
+            rows.append(("Employees", current().format_compact(float(first("P1128")))))
         rows.append(("Industry", labels("P452")))
     elif is_place:
         rows.append(("Country", labels("P17", 1)))
         if first("P1082"):
-            rows.append(("Population", compact(float(first("P1082")))))
+            rows.append(("Population", current().format_compact(float(first("P1082")))))
         if first("P2046"):
             km2 = float(first("P2046"))
             rows.append(("Area", f"{km2:,.0f} km²" if km2 >= 10 else f"{km2:,.2f} km²"))

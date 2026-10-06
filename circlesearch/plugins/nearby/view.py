@@ -1,7 +1,8 @@
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QColor, QPainterPath
+from PyQt6.QtGui import QPainterPath
 
 from circlesearch.plugins.nearby import NearbyCard
+from circlesearch.ui import tokens as T
 from circlesearch.ui.cards import CardView, decode, view
 
 WIDTHS = [172, 118, 54]
@@ -14,34 +15,31 @@ class NearbyView(CardView):
         return {"images": [decode(place.image) for place in card.places]}
 
     def layout(self, p, targets):
-        card, c, pad = self.card, self.c, self.PAD
-        width = self.inner
-        y = pad
-        self.text(p, card.title, 16, 620, c["on_surface"], pad, y, width)
-        y += 28
-        if card.blurb:
-            y += self.text(p, card.blurb, 13.5, 440, c["on_surface_variant"], pad, y, width, lines=2)[0] + 12
+        card, pad = self.card, self.PAD
+        y = self.header(p, pad, card.title)
+        y = self.paragraph(p, y, card.blurb, lines=2, quiet=True, style="body_small")
         shown = [(place, img) for place, img in zip(card.places, self.assets["images"]) if img is not None]
-        gap, h = 8, 168
+        gap, h = T.GAP, 168
         x = pad
         for i, ((place, img), w) in enumerate(zip(shown, WIDTHS)):
-            if x >= pad + width:
+            if x >= pad + self.inner:
                 break
-            w = min(w, pad + width - x)
+            w = min(w, pad + self.inner - x)
             r = QRectF(x, y, w, h)
-            targets[f"item{i}"] = (r.adjusted(0, 0, 0, 44), (lambda u=place.url: self.open(u)) if place.url else None)
+            radius = T.RADIUS["media"] if w > 60 else w / 2
+            name = f"item{i}"
+            targets[name] = (r.adjusted(0, 0, 0, 44), lambda u=place.url: self.open(u))
             if p:
-                clip = QPainterPath(); clip.addRoundedRect(r, 24 if w > 60 else w / 2, 24 if w > 60 else w / 2)
+                clip = QPainterPath(); clip.addRoundedRect(r, radius, radius)
                 p.save(); p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
-                sc = max(w / img.width(), h / img.height())
+                zoom = 1 + 0.06 * max(0.0, self.fx(name).lift.value)
+                sc = max(w / img.width(), h / img.height()) * zoom
                 sw, sh = w / sc, h / sc
                 p.drawImage(r, img, QRectF((img.width() - sw) / 2, (img.height() - sh) / 2, sw, sh))
-                if self.hover == f"item{i}":
-                    p.fillRect(r, QColor(255, 255, 255, 30))
                 p.restore()
+                self.state(p, r, radius, name)
             if w >= 100:
-                self.text(p, place.title, 13.5, 600, c["on_surface"], x + 2, y + h + 8, w - 4, lines=1)
-                self.text(p, place.distance, 12, 500, c["on_surface_variant"], x + 2, y + h + 26, w - 4)
+                self.text(p, place.title, x + 2, y + h + 8, w - 4, "label", weight=600)
+                self.text(p, place.distance, x + 2, y + h + 26, w - 4, "caption", self.c["on_surface_variant"])
             x += w + gap
-        y += h + 26 + 18 + 14
-        return self.source(p, y, targets) + pad - 4
+        return self.footer(p, y + h + 44 + T.SECTION, targets)

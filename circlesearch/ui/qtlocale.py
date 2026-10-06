@@ -42,11 +42,11 @@ class QtLocale(Locale):
     def currency_symbol(self):
         return self.money.currencySymbol()
 
-    def format_money(self, amount, symbol):
-        return self.money.toCurrencyString(amount, symbol)
+    def format_money(self, amount, symbol, decimals=2):
+        return self.money.toCurrencyString(amount, symbol, decimals)
 
     def format_number(self, value, decimals):
-        return self.money.toString(value, "f", decimals)
+        return self.money.toString(float(value), "f", decimals)
 
     def language_name(self, code):
         name = QLocale.languageToString(QLocale(code).language())

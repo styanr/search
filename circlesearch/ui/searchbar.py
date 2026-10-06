@@ -4,9 +4,10 @@ from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import QAbstractButton, QHBoxLayout, QLineEdit, QWidget
 
-from circlesearch.ui.effects import draw_check, draw_glyph, draw_spinner
-from circlesearch.ui.motion import OUT_CUBIC, SPRING, Animated, Tween, frame_timer, lerp, mix, with_alpha
-from circlesearch.ui.theme import ON_PRIMARY, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SURFACE, SURFACE_HIGH, ui_font
+from circlesearch.ui.effects import draw_check, draw_glyph, draw_loader
+from circlesearch.ui import tokens as T
+from circlesearch.ui.motion import Spring, Tween, frame_timer, lerp, mix, with_alpha
+from circlesearch.ui.theme import ON_PRIMARY, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SURFACE, SURFACE_HIGH, font
 
 
 class PillButton(QAbstractButton):
@@ -16,19 +17,17 @@ class PillButton(QAbstractButton):
         super().__init__()
         self.setText(text)
         self._label, self._busy_text, self._done_text = text, busy_text, done_text
-        self.setFont(ui_font(14, 560))
+        self.setFont(font(14, 560))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.spinning = False
-        self._press = Animated(0.0)
-        self._hover = Animated(0.0, 0.15)
-        self._primary = Animated(0.0, 0.3)
-        self._confirm = Animated(0.0, 0.3, SPRING)
+        self._hover, self._press, self._primary = (Spring(*T.SPRING_EFFECTS) for _ in range(3))
+        self._squish, self._confirm = Spring(*T.SPRING_SPATIAL), Spring(*T.SPRING_SPATIAL)
         self._check = None
-        self._clock = time.monotonic()
+        self._clock = self._last = time.monotonic()
         self._timer = frame_timer(self, self._step)
-        self.pressed.connect(lambda: self._animate(self._press, 1.0, 0.12, OUT_CUBIC))
-        self.released.connect(lambda: self._animate(self._press, 0.0, 0.45, SPRING))
+        self.pressed.connect(lambda: self._animate(1.0, self._press, self._squish))
+        self.released.connect(lambda: self._animate(0.0, self._press, self._squish))
 
     def sizeHint(self):
         fm = QFontMetrics(self.font())
@@ -40,52 +39,59 @@ class PillButton(QAbstractButton):
         return QSize(max(widths) + 44, 46)
 
     def set_primary(self, on):
-        self._animate(self._primary, 1.0 if on else 0.0)
+        self._animate(1.0 if on else 0.0, self._primary)
 
     def confirm(self):
         if self._done_text:
             self.setText(self._done_text)
         self._check = Tween(0.2)
-        self._primary.set(1.0, 0.2)
-        self._animate(self._confirm, 1.0)
+        self._animate(1.0, self._primary, self._confirm)
 
     def set_spinning(self, on):
         self.spinning = on
         self.setText(self._busy_text if on and self._busy_text else self._label)
-        self._timer.start()
+        self._start()
 
-    def _animate(self, value, target, duration=None, curve=None):
-        value.set(target, duration, curve)
-        self._timer.start()
+    def _start(self):
+        if not self._timer.isActive():
+            self._last = time.monotonic()
+            self._timer.start()
+
+    def _animate(self, target, *springs):
+        for spring in springs:
+            spring.set(target)
+        self._start()
 
     def enterEvent(self, e):
-        self._animate(self._hover, 1.0)
+        self._animate(1.0, self._hover)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self._animate(self._hover, 0.0)
+        self._animate(0.0, self._hover)
         super().leaveEvent(e)
 
     def _step(self):
         now = time.monotonic()
+        dt, self._last = now - self._last, now
+        animating = any([s.step(dt) for s in (self._hover, self._press, self._primary, self._squish, self._confirm)])
         self.update()
-        animating = any(a.active(now) for a in (self._press, self._hover, self._primary, self._confirm))
         if not (self.spinning or animating or (self._check is not None and not self._check.done(now))):
             self._timer.stop()
 
     def paintEvent(self, _):
         now = time.monotonic()
-        press, hover, prim = self._press.get(now), self._hover.get(now), self._primary.get(now)
+        press, hover, prim = self._press.value, self._hover.value, self._primary.value
+        squish = max(0.0, self._squish.value)
         enabled = self.isEnabled()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        scale = 1 - 0.035 * press
+        scale = 1 - 0.05 * squish
         p.translate(r.center())
         p.scale(scale, scale)
         p.translate(-r.center())
-        radius = lerp(lerp(r.height() / 2, 14, self._confirm.get(now)), 11, max(0.0, press))
+        radius = max(4.0, min(r.height() / 2, lerp(lerp(r.height() / 2, 14, self._confirm.value), 11, squish)))
 
         bg = mix(SURFACE_HIGH, PRIMARY, prim, 1.0 if enabled else 0.55)
         fg = mix(ON_SURFACE, ON_PRIMARY, prim, 1.0 if enabled else 0.45)
@@ -93,7 +99,7 @@ class PillButton(QAbstractButton):
         p.setBrush(bg)
         p.drawRoundedRect(r, radius, radius)
         if enabled:
-            p.setBrush(with_alpha(fg, 0.08 * hover + 0.10 * press))
+            p.setBrush(with_alpha(fg, (T.HOVER_ALPHA * hover + T.PRESS_ALPHA * press) * 1.4 / 255))
             p.drawRoundedRect(r, radius, radius)
 
         fm = QFontMetrics(self.font())
@@ -101,8 +107,7 @@ class PillButton(QAbstractButton):
         sw = 26 if self.spinning else (self.CHECK if self._check is not None else 0)
         x = r.center().x() - (tw + sw) / 2
         if self.spinning:
-            draw_spinner(p, QPointF(x + 9, r.center().y()), now - self._clock,
-                         with_alpha(fg, 0.9), radius=7, width=2.2)
+            draw_loader(p, QPointF(x + 9, r.center().y()), now - self._clock, with_alpha(fg, 0.9), radius=8)
         elif self._check is not None:
             draw_check(p, QPointF(x + 7, r.center().y()), self._check.value(now), fg)
         p.setFont(self.font())
@@ -120,7 +125,7 @@ class SearchBar(QWidget):
     def __init__(self, parent):
         super().__init__(parent)
         self.edit = QLineEdit()
-        self.edit.setFont(ui_font(17, 430))
+        self.edit.setFont(font(17, 430))
         self.edit.setFrame(False)
         self.edit.setStyleSheet(
             f"QLineEdit {{ background: transparent; color: {ON_SURFACE.name()};"

@@ -43,6 +43,35 @@ class SpringCurve:
 CARD_SPRING = SpringCurve()
 
 
+class Spring:
+    def __init__(self, stiffness, damping, value=0.0):
+        self.k, self.zeta = stiffness, damping
+        self.value = self.target = value
+        self.velocity = 0.0
+
+    def set(self, target):
+        self.target = target
+
+    @property
+    def active(self):
+        return self.value != self.target or self.velocity != 0.0
+
+    def step(self, dt):
+        if MOTION <= 0:
+            self.value, self.velocity = self.target, 0.0
+            return False
+        dt = min(dt, 0.05) / MOTION
+        c = 2 * self.zeta * math.sqrt(self.k)
+        n = max(1, math.ceil(dt / 0.004))
+        h = dt / n
+        for _ in range(n):
+            self.velocity += (-self.k * (self.value - self.target) - c * self.velocity) * h
+            self.value += self.velocity * h
+        if abs(self.value - self.target) < 1e-3 and abs(self.velocity) < 1e-2:
+            self.value, self.velocity = self.target, 0.0
+        return self.active
+
+
 def lerp(a, b, p):
     return a + (b - a) * p
 

@@ -230,6 +230,8 @@ Each folder in `circlesearch/plugins/` is a plugin. The app loads all of them at
 
 `__init__.py` must not import Qt. Put Qt code in `view.py`. A view's `prepare(card)` runs off the main thread, so decode images there.
 
+To match the other cards, build views from the parts in `ui/cards.py` (`header`, `chip_row`, `paragraph`, `big_value`, `rows`, `button_group`, `copyable`, `footer`) and the sizes and colours in `ui/tokens.py`. A card's `accent` picks its colour family: `blue` for knowledge and places, `green` for money, `red` for dates and time, `amber` for software, and `neutral` for tools and data.
+
 A small plugin, `circlesearch/plugins/ip/__init__.py`:
 
 ```python

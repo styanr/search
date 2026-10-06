@@ -13,13 +13,13 @@ from circlesearch.core import actions, settings
 from circlesearch.core.ocr import join_words
 from circlesearch.core.textindex import TextIndex
 from circlesearch.ui.board import CardBoard, shadow_rect
-from circlesearch.ui.effects import InkStroke, aurora_image, draw_glyph, draw_spinner, google_gradient, lightness_at
+from circlesearch.ui.effects import InkStroke, aurora_image, draw_glyph, draw_loader, google_gradient, lightness_at
 from circlesearch.ui.motion import (AMBIENT, MOTION, OUT_CUBIC, SPRING, SWEEP_EASE, WORD_SPRING, Animated, Tween,
                                     frame_timer, lerp, lerp_rect, mix, with_alpha)
 from circlesearch.ui.reader import TextReader, to_point, to_qrect, to_rect
 from circlesearch.ui.searchbar import SearchBar
 from circlesearch.ui.theme import (HIGHLIGHT_DARK, HIGHLIGHT_LIGHT, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SCRIM,
-                                   SURFACE, SURFACE_HIGH, ui_font)
+                                   SURFACE, SURFACE_HIGH, font)
 
 TAP_BAND = QSizeF(900, 96)
 TAP_DISTANCE = 6
@@ -701,9 +701,9 @@ class Overlay(QWidget):
             return
         working = self.reading or bool(self._pending and self._pending[0] == "tap")
         text = self.status or "Circle or tap anything to search"
-        font = ui_font(15, 480)
-        fm = QFontMetrics(font)
-        key_font = ui_font(12, 600)
+        label_font = font(15, 480)
+        fm = QFontMetrics(label_font)
+        key_font = font(12, 600)
         kfm = QFontMetrics(key_font)
         show_key = not self.status
         kw = kfm.horizontalAdvance("Esc") + 16 if show_key else 0
@@ -721,10 +721,10 @@ class Overlay(QWidget):
         p.drawRoundedRect(box, h / 2, h / 2)
         icon = QPointF(box.left() + 28, box.center().y())
         if working:
-            draw_spinner(p, icon, now - self.t0, PRIMARY, radius=8, width=2.6)
+            draw_loader(p, icon, now - self.t0, PRIMARY, radius=10)
         else:
             draw_glyph(p, icon)
-        p.setFont(font)
+        p.setFont(label_font)
         p.setPen(ON_SURFACE)
         p.drawText(QRectF(box.left() + 50, box.top(), tw + 2, h), Qt.AlignmentFlag.AlignVCenter, text)
         if show_key:

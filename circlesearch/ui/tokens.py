@@ -21,6 +21,23 @@ TILE = {k: mixh(v, "#FFFFFF", 0.06) for k, v in TINT.items()}
 PRIMARY_CONTAINER, ON_PRIMARY_CONTAINER = "#0842A0", "#D3E3FD"
 TERTIARY_CONTAINER, ON_TERTIARY_CONTAINER = "#0F5223", "#C4EED0"
 ERROR_CONTAINER, ON_ERROR_CONTAINER = "#8C1D18", "#F9DEDC"
+AMBER_CONTAINER, ON_AMBER_CONTAINER = "#5C4300", "#FFDF9E"
+NEUTRAL_CONTAINER = "#3A3C45"
+FAMILY = {
+    "blue": (PRIMARY_CONTAINER, ON_PRIMARY_CONTAINER), "green": (TERTIARY_CONTAINER, ON_TERTIARY_CONTAINER),
+    "red": (ERROR_CONTAINER, ON_ERROR_CONTAINER), "amber": (AMBER_CONTAINER, ON_AMBER_CONTAINER),
+    "neutral": (NEUTRAL_CONTAINER, ON_SURFACE)}
+LINE = BLUE
+
+TYPE = {
+    "display_large": (72, 430), "display": (52, 520), "headline": (28, 640), "subhead": (18, 580),
+    "title": (16, 620), "body": (14.5, 430), "body_small": (13, 480), "label": (12.5, 560),
+    "caption": (11.5, 520), "button": (13, 600)}
+PAD, GAP, SECTION = 20, 8, 14
+RADIUS = {"hero": 32, "card": 24, "media": 20, "tile": 16, "chip": 8}
+CHIP_H, CHIP_SMALL_H, BUTTON_H, ICON_BUTTON = 30, 26, 40, 36
+HOVER_ALPHA, PRESS_ALPHA, BORDER_ALPHA = 16, 14, 16
+SPRING_EFFECTS, SPRING_SPATIAL = (1600, 1.0), (800, 0.6)
 SKY_DAY, SKY_NIGHT = mixh(SURFACE, BLUE, 0.22), mixh(SURFACE, "#5B4FC7", 0.16)
 
 if __name__ == "__main__":

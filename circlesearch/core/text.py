@@ -68,13 +68,6 @@ def fmt(x, digits=2):
     return f"{x:,.{digits}f}".rstrip("0").rstrip(".")
 
 
-def compact(n):
-    for size, suffix in ((1e9, " billion"), (1e6, " million")):
-        if abs(n) >= size:
-            return f"{n / size:.1f}".rstrip("0").rstrip(".") + suffix
-    return f"{round(n):,}"
-
-
 def first_sentences(text, n=2, limit=260):
     parts = re.split(r"(?<=[.!?])\s+", text)
     out = " ".join(parts[:n])

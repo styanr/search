@@ -33,17 +33,7 @@ def load_fonts():
             QFontDatabase.addApplicationFont(path)
 
 
-def ui_font(px, weight=450, roundness=100):
-    f = QFont()
-    f.setFamilies(FONT_FAMILIES)
-    f.setPixelSize(px)
-    f.setWeight(QFont.Weight(min(900, max(100, round(weight / 100) * 100))))
-    f.setVariableAxis(QFont.Tag.fromString("wght"), weight)
-    f.setVariableAxis(QFont.Tag.fromString("ROND"), roundness)
-    return f
-
-
-def card_font(px, weight=450, rond=100, wdth=100, opsz=None):
+def font(px, weight=450, rond=100, wdth=100, opsz=None):
     f = QFont()
     f.setFamilies(FONT_FAMILIES)
     f.setPixelSize(round(px))
@@ -53,3 +43,8 @@ def card_font(px, weight=450, rond=100, wdth=100, opsz=None):
     f.setVariableAxis(QFont.Tag.fromString("wdth"), wdth)
     f.setVariableAxis(QFont.Tag.fromString("opsz"), opsz or min(144, max(6, px)))
     return f
+
+
+def type_font(style, weight=None, wdth=100):
+    px, default = T.TYPE[style]
+    return font(px, weight or default, wdth=wdth)

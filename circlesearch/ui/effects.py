@@ -4,16 +4,47 @@ from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QConicalGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
 
 from circlesearch.ui.motion import mix, with_alpha
+from circlesearch.ui.shapes import STARS
 from circlesearch.ui.theme import GOOGLE
 
 
-def draw_spinner(p, center, t, color, radius=8, width=2.6):
-    span = 30 + 230 * (0.5 - 0.5 * math.cos(t * 4.4))
-    start = -(t * 320 + 0.5 * span) % 360
-    p.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawArc(QRectF(center.x() - radius, center.y() - radius, 2 * radius, 2 * radius),
-              int(start * 16), int(span * 16))
+LOADER_SEQ = ["cookie9", "soft_burst", "cookie4", "clover4", "sunny"]
+
+
+def loader_path(t, rect, settle=0.0):
+    seq = LOADER_SEQ
+    i = int(t / 0.65) % len(seq)
+    a, b = STARS[seq[i]], STARS[seq[(i + 1) % len(seq)]]
+    k = min(1.0, (t / 0.65) % 1.0 / 0.6)
+    k = 1 - (1 - k) ** 3
+    cookie = STARS["cookie9"]
+    spin = t * 2.2
+    step = 2 * math.pi / cookie[0]
+    spin += (round(spin / step) * step - spin) * settle
+    cx, cy = rect.center().x(), rect.center().y()
+    R = rect.width() / 2 * (26 / 28 + (1 - 26 / 28) * settle)
+
+    def radius(shape, th):
+        n, inner, sharp = shape
+        return inner + (1 - inner) * ((1 + math.cos(n * (th - spin + math.pi / 2))) / 2) ** sharp
+
+    path = QPainterPath()
+    for j in range(181):
+        th = 2 * math.pi * j / 180
+        moving = radius(a, th) * (1 - k) + radius(b, th) * k
+        r = R * (moving * (1 - settle) + radius(cookie, th) * settle)
+        pt = QPointF(cx + r * math.cos(th), cy + r * math.sin(th))
+        path.moveTo(pt) if j == 0 else path.lineTo(pt)
+    path.closeSubpath()
+    return path
+
+
+def draw_loader(p, center, t, color, radius=8):
+    p.save()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawPath(loader_path(t, QRectF(center.x() - radius, center.y() - radius, 2 * radius, 2 * radius)))
+    p.restore()
 
 
 def draw_glyph(p, center, radius=8, width=2.8, alpha=1.0):

@@ -26,6 +26,7 @@ class Place:
 class NearbyCard(Card):
     kind = "nearby"
     priority = 6
+    accent = "blue"
 
     blurb: str = ""
     places: list[Place] = field(default_factory=list)
