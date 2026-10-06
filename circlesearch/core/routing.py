@@ -17,6 +17,8 @@ class Route:
     known_word: bool | None = None
     text: str = ""
     value: Any = None
+    words: list | None = None
+    source: str = ""
 
 
 @dataclass
@@ -25,31 +27,33 @@ class Recognizer:
     parse: Callable[[str], Any]
     max_chars: int = 90
     in_spans: bool = True
+    raw: bool = False
 
 
 recognizers = Registry("recognizer")
 
 
-def recognizer(kind, order=100, max_chars=90, in_spans=True):
+def recognizer(kind, order=100, max_chars=90, in_spans=True, raw=False):
     def register(parse):
-        recognizers.add(kind, Recognizer(kind, parse, max_chars, in_spans), order)
+        recognizers.add(kind, Recognizer(kind, parse, max_chars, in_spans, raw), order)
         return parse
     return register
 
 
-def recognise(text, spans_only=False):
-    t = tidy(text)
-    if not t:
+def recognise(text, spans_only=False, with_text=False):
+    t, raw = tidy(text), text.strip()
+    if not t and not raw:
         return None
     for r in recognizers:
-        if len(t) > r.max_chars or (spans_only and not r.in_spans):
+        source = raw if r.raw else t
+        if not source or len(source) > r.max_chars or (spans_only and not r.in_spans):
             continue
         try:
-            value = r.parse(t)
+            value = r.parse(source)
         except (ValueError, OverflowError, TypeError):
             continue
         if value is not None:
-            return r.kind, value
+            return (r.kind, value, source) if with_text else (r.kind, value)
     return None
 
 
@@ -125,9 +129,9 @@ class LocalRouter:
 
     def route(self, text):
         t = tidy(text)
-        found = recognise(t)
+        found = recognise(text, with_text=True)
         if found:
-            return Route(found[0], text=t, value=found[1])
+            return Route(found[0], text=found[2], value=found[1])
         found = find_structured(t)
         if found:
             return Route(found[0], text=found[1], value=found[2])

@@ -19,7 +19,7 @@ class CardFeed(QObject):
         self.token = 0
         self.job = None
 
-    def start(self, text):
+    def start(self, text, words=None, route=None):
         self.cancel()
         self.token += 1
         token = self.token
@@ -27,7 +27,8 @@ class CardFeed(QObject):
             text,
             lambda route, placeholder: self.routed.emit(token, route, placeholder),
             lambda card: self.ready.emit(token, card, prepared(card)),
-            lambda card: self.extra.emit(token, card, prepared(card)))
+            lambda card: self.extra.emit(token, card, prepared(card)),
+            words, route)
         return token
 
     def cancel(self):

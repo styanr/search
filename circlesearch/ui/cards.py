@@ -10,13 +10,14 @@ from PyQt6.QtWidgets import QWidget
 from circlesearch.core import plugins
 from circlesearch.core.registry import Registry
 from circlesearch.ui import tokens as T
-from circlesearch.ui.effects import loader_path
-from circlesearch.ui.motion import MOTION, Spring, SpringCurve, mix, ramp
+from circlesearch.ui.effects import draw_check, loader_path
+from circlesearch.ui.motion import MOTION, Spring, SpringCurve, mix, ramp, with_alpha
 from circlesearch.ui.shapes import glyph, shape_path
 from circlesearch.ui.theme import C, type_font
 
 TRANSITION = 0.55
 TRANSITION_SPRING = SpringCurve(duration=TRANSITION)
+CONFIRM_HOLD = 1.5
 
 views = Registry("card view")
 
@@ -54,7 +55,15 @@ def decode(data):
 def wrap(fm, text, width, max_lines):
     if max_lines <= 1:
         return [fm.elidedText(" ".join(text.split()), Qt.TextElideMode.ElideRight, int(width))]
-    words, lines, line = text.split(), [], ""
+    words, lines, line = [], [], ""
+    for w in text.split():
+        while fm.horizontalAdvance(w) > width and len(w) > 1:
+            cut = len(w) - 1
+            while cut > 1 and fm.horizontalAdvance(w[:cut]) > width:
+                cut -= 1
+            words.append(w[:cut])
+            w = w[cut:]
+        words.append(w)
     for i, w in enumerate(words):
         trial = f"{line} {w}".strip()
         if fm.horizontalAdvance(trial) <= width or not line:
@@ -145,6 +154,7 @@ class CardView:
         return self.w.hover
 
     def copy(self, payload):
+        self.w.confirm(self.w.firing)
         self.w.copyRequested.emit(payload)
 
     def open(self, url):
@@ -153,7 +163,41 @@ class CardView:
     def action_handler(self, action):
         if action.kind == "open":
             return lambda: self.open(action.payload)
+        if action.kind == "save":
+            return lambda: self.save(action)
+        if action.kind == "run":
+            return lambda: self.run(action)
         return lambda: self.copy(action.payload)
+
+    def save(self, action):
+        from circlesearch.core.actions import save_file
+        self.w.confirm(self.w.firing)
+        self.w.saveRequested.emit(save_file(action.filename, action.payload))
+
+    def run(self, action):
+        self.w.confirm(self.w.firing)
+        self.w.runRequested.emit(action.payload)
+
+    def done(self, name):
+        return self.w.confirmation(name)
+
+    def step(self, dt):
+        return False
+
+    def wheel(self, delta, pos):
+        return False
+
+    def press(self, pos):
+        return False
+
+    def drag(self, pos):
+        pass
+
+    def release(self, pos):
+        return False
+
+    def state_key(self):
+        return None
 
     def family(self):
         return self.card.accent if self.card.accent in T.FAMILY else "neutral"
@@ -215,8 +259,20 @@ class CardView:
         p.scale(k, k)
         p.translate(-c)
 
-    def copy_icon(self, p, r, amount, color=None, reveal=1.0):
+    def copy_icon(self, p, r, amount, color=None, reveal=1.0, done=0.0):
+        reveal = max(reveal, done)
         if reveal <= 0.01:
+            return
+        if done > 0.01:
+            p.save()
+            p.setOpacity(p.opacity() * min(1.0, reveal))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(mix(QColor(255, 255, 255, round(T.HOVER_ALPHA * amount)), self.c["primary"], done * 0.9))
+            k = 0.7 + 0.3 * done
+            c = r.center()
+            p.drawEllipse(c, r.width() / 2 * k, r.height() / 2 * k)
+            draw_check(p, c, min(1.0, done * 1.4), self.c["on_primary"], size=5.5)
+            p.restore()
             return
         p.save()
         p.setOpacity(p.opacity() * min(1.0, reveal))
@@ -242,7 +298,7 @@ class CardView:
         r = icon or QRectF(rect.right() - s - 6, rect.top() + 6, s, s)
         p.save()
         self.squeezed(p, r, name, 0.12)
-        self.copy_icon(p, r, it.hover.value, ink, 1.0 if always else it.lift.value)
+        self.copy_icon(p, r, it.hover.value, ink, 1.0 if always else it.lift.value, self.done(name))
         p.restore()
 
     def chip(self, p, chip, x, y, small=False, name=None, targets=None):
@@ -268,9 +324,15 @@ class CardView:
             p.drawRoundedRect(r, radius, radius)
             if active:
                 self.state(p, r, radius, name)
-            if chip.dot:
+            done = self.done(name) if active else 0.0
+            if done > 0.01:
+                p.setBrush(with_alpha(self.c["primary"], 0.9 * done)); p.drawRoundedRect(r, radius, radius)
+                fg = mix(fg, self.c["on_primary"], done)
+            if done > 0.01 and lead:
+                draw_check(p, QPointF(x + 16, y + h / 2), min(1.0, done * 1.4), fg, size=5)
+            elif chip.dot:
                 p.setBrush(C(chip.dot)); p.drawEllipse(QPointF(x + 16, y + h / 2), 5, 5)
-            if chip.icon:
+            elif chip.icon:
                 glyph(p, chip.icon, QRectF(x + 9, y + (h - 15) / 2, 15, 15), fg)
             p.setFont(f); p.setPen(fg)
             p.drawText(QRectF(x + 12 + lead, y, w - 24 - lead, h), Qt.AlignmentFlag.AlignVCenter, chip.label)
@@ -339,17 +401,21 @@ class CardView:
         h, gap = T.BUTTON_H, 2
         x = self.PAD
         for i, a in enumerate(actions):
+            name = f"action{i}"
             w = fm.horizontalAdvance(a.label) + 32
+            done = self.done(name)
+            if done > 0:
+                label = {"save": "Saved", "run": "Started"}.get(a.kind, "Copied")
+                w = max(w, w + (fm.horizontalAdvance(label) + 52 - w) * min(1.0, done * 1.3))
             r = QRectF(x, y, w, h)
             first, last = i == 0, i == len(actions) - 1
-            name = f"action{i}"
             targets[name] = (r, self.action_handler(a))
             if p:
                 lift = max(0.0, min(1.0, self.fx(name).lift.value))
                 big, small = h / 2, 8 + (h / 2 - 8) * lift
                 path = rrect(r, big if first else small, big if last else small, big if last else small, big if first else small)
-                bg = self.c["primary"] if first else C(self.tile())
-                fg = self.c["on_primary"] if first else self.c["on_surface"]
+                bg = self.c["primary"] if first else mix(C(self.tile()), self.container(), done)
+                fg = self.c["on_primary"] if first else mix(self.c["on_surface"], self.on_container(), done)
                 p.save()
                 self.squeezed(p, r, name)
                 p.setPen(Qt.PenStyle.NoPen); p.setBrush(bg); p.drawPath(path)
@@ -357,16 +423,44 @@ class CardView:
                 alpha = T.HOVER_ALPHA * it.hover.value + T.PRESS_ALPHA * it.press.value
                 if alpha > 0.5:
                     p.setBrush(QColor(fg.red(), fg.green(), fg.blue(), round(alpha * 1.4))); p.drawPath(path)
-                p.setFont(f); p.setPen(fg); p.drawText(r, Qt.AlignmentFlag.AlignCenter, a.label)
+                p.setFont(f); p.setPen(fg)
+                if done > 0.01:
+                    label = {"save": "Saved", "run": "Started"}.get(a.kind, "Copied")
+                    lw = fm.horizontalAdvance(label)
+                    lx = r.center().x() - (lw + 20) / 2
+                    p.setOpacity(min(1.0, done * 1.5))
+                    draw_check(p, QPointF(lx + 6, r.center().y()), min(1.0, done * 1.4), fg, size=5.5)
+                    p.setPen(fg); p.drawText(QRectF(lx + 20, r.top(), lw + 2, r.height()), Qt.AlignmentFlag.AlignVCenter, label)
+                else:
+                    p.drawText(r, Qt.AlignmentFlag.AlignCenter, a.label)
                 p.restore()
             x += w + gap
         return y + h + T.SECTION
 
     def footer(self, p, y, targets):
         card = self.card
-        if not card.source:
+        tool = self.w.pinnable or self.w.pinned
+        if not card.source and not tool:
             return y - T.SECTION + self.PAD
         f = type_font("caption"); fm = QFontMetrics(f)
+        if tool:
+            s = 28
+            name = "unpin" if self.w.pinned else "pin"
+            b = QRectF(self.PAD + self.inner - s + 6, y + fm.lineSpacing() / 2 - s / 2, s, s)
+            targets[name] = (b, self.w.unpin if self.w.pinned else self.w.pin)
+            if p:
+                it = self.fx(name)
+                p.save()
+                self.squeezed(p, b, name, 0.12)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(255, 255, 255, round(T.HOVER_ALPHA * (0.6 + it.hover.value))))
+                p.drawEllipse(b)
+                color = mix(self.c["on_surface_variant"], self.c["on_surface"], it.hover.value)
+                inset = 7 - 1.5 * max(0.0, it.lift.value)
+                glyph(p, "close" if self.w.pinned else "pin", b.adjusted(inset, inset, -inset, -inset), color)
+                p.restore()
+            if not card.source:
+                return b.bottom() + self.PAD - 6
         r = QRectF(self.PAD, y, fm.horizontalAdvance(card.source) + 2, fm.lineSpacing())
         if card.url:
             targets["source"] = (r.adjusted(-6, -4, 6, 4), lambda: self.open(card.url))
@@ -429,10 +523,18 @@ class CardView:
 class CardWidget(QWidget):
     copyRequested = pyqtSignal(str)
     openRequested = pyqtSignal(str)
+    saveRequested = pyqtSignal(str)
+    runRequested = pyqtSignal(object)
+    pinRequested = pyqtSignal(object)
+    closeRequested = pyqtSignal()
 
-    def __init__(self, parent, palette, ambient=True, width=404, role="secondary"):
+    def __init__(self, parent, palette, ambient=True, width=404, role="secondary", pinnable=False, pinned=False):
         super().__init__(parent)
         self.palette_, self.ambient, self.role = palette, ambient, role
+        self.pinnable, self.pinned = pinnable, pinned
+        self.firing = None
+        self._confirmed = {}
+        self._dragging = False
         self.WIDTH = width
         self.card = None
         self.view = None
@@ -475,9 +577,12 @@ class CardWidget(QWidget):
         h0, loader_t = self.height(), time.monotonic() - self._t0
         self._cache_key = None
         self.card, self.loading = card, False
+        self.assets = assets
         cls = view_for(card)
         self.view = cls(self, card, cls.prepare(card) if assets is None else assets)
+        self.assets = self.view.assets
         self._timer.stop()
+        self._wake()
         self.resize(self.WIDTH, self._layout(None))
         self.update()
         if not animate:
@@ -507,14 +612,40 @@ class CardWidget(QWidget):
     def interaction(self, name):
         return self.interactions.get(name, IDLE)
 
+    def confirm(self, name):
+        if name is None:
+            return
+        self._confirmed[name] = time.monotonic()
+        self._wake()
+
+    def confirmation(self, name):
+        start = self._confirmed.get(name)
+        if start is None:
+            return 0.0
+        t = (time.monotonic() - start) / max(MOTION, 0.01)
+        if t >= CONFIRM_HOLD:
+            return 0.0
+        rise = min(1.0, t / 0.22)
+        fall = min(1.0, (CONFIRM_HOLD - t) / 0.3)
+        return min(rise, fall)
+
+    def pin(self):
+        self.pinRequested.emit(self)
+
+    def unpin(self):
+        self.closeRequested.emit()
+
+    def _wake(self):
+        if not self._motion_timer.isActive():
+            self._motion_last = time.monotonic()
+            self._motion_timer.start()
+
     def _aim(self):
         for name in {self.hover, self.pressed} - {None}:
             self.interactions.setdefault(name, Interaction())
         for name, it in self.interactions.items():
             it.aim(name == self.hover, name == self.pressed)
-        if not self._motion_timer.isActive():
-            self._motion_last = time.monotonic()
-            self._motion_timer.start()
+        self._wake()
 
     def _motion_step(self):
         now = time.monotonic()
@@ -525,11 +656,29 @@ class CardWidget(QWidget):
                 active = True
             elif it.idle and name not in (self.hover, self.pressed):
                 del self.interactions[name]
+        for name, start in list(self._confirmed.items()):
+            if (now - start) / max(MOTION, 0.01) >= CONFIRM_HOLD:
+                del self._confirmed[name]
+            else:
+                active = True
+        if self.view is not None and self.view.step(dt):
+            active = True
         self.update()
         if not active:
             self._motion_timer.stop()
 
+    def wheelEvent(self, e):
+        if self.view is not None and self.view.wheel(e.angleDelta(), e.position()):
+            self._wake()
+            e.accept()
+        else:
+            e.ignore()
+
     def mouseMoveEvent(self, e):
+        if self._dragging:
+            self.view.drag(e.position())
+            self._wake()
+            return
         hover = self._target_at(e.position())
         if hover != self.hover:
             self.hover = hover
@@ -541,17 +690,29 @@ class CardWidget(QWidget):
         self._aim()
 
     def mousePressEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            e.accept()
+            return
         name = self._target_at(e.position())
+        self._dragging = self.view is not None and self.view.press(e.position())
         if name and self._targets[name][1]:
             self.pressed = name
             self._aim()
+        elif self.pinned and not self._dragging and self.window().windowHandle() is not None:
+            self.window().windowHandle().startSystemMove()
         e.accept()
 
     def mouseReleaseEvent(self, e):
         pressed, self.pressed = self.pressed, None
+        dragged = self._dragging and self.view.release(e.position())
+        self._dragging = False
         self._aim()
-        if pressed and self._target_at(e.position()) == pressed and pressed in self._targets:
-            self._targets[pressed][1]()
+        if not dragged and pressed and self._target_at(e.position()) == pressed and pressed in self._targets:
+            self.firing = pressed
+            try:
+                self._targets[pressed][1]()
+            finally:
+                self.firing = None
         e.accept()
 
     def _render(self):
@@ -568,7 +729,8 @@ class CardWidget(QWidget):
             return self._paint_now(QPainter(self))
         if self._motion_timer.isActive():
             return self._paint_now(QPainter(self))
-        key = (self.size().width(), self.size().height(), self.hover, self.pressed)
+        key = (self.size().width(), self.size().height(), self.hover, self.pressed,
+               tuple(self._confirmed), self.view.state_key() if self.view else None)
         if self._cache_key != key:
             self._cache, self._cache_key = self._render(), key
         QPainter(self).drawPixmap(0, 0, self._cache)

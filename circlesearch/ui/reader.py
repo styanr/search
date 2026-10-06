@@ -1,14 +1,17 @@
+import math
 import os
 import tempfile
 import threading
 
 from PyQt6.QtCore import QObject, QRect, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QImage
 
-from circlesearch.core import ocr
+from circlesearch.core import barcode, ocr, palette
 from circlesearch.core.geometry import Point, Rect
 
 OCR_SCALE = 2
 OCR_MARGIN = 28
+SCAN_SIDE = 320
 
 
 def to_rect(r):
@@ -26,6 +29,7 @@ def to_point(p):
 class TextReader(QObject):
     screen_read = pyqtSignal(list)
     region_read = pyqtSignal(int, object, list)
+    image_read = pyqtSignal(int, list, list)
 
     def __init__(self, shot, dpr, debug_dir=None, parent=None):
         super().__init__(parent)
@@ -78,6 +82,40 @@ class TextReader(QObject):
         def work():
             words = self._read(image, OCR_SCALE * d, offset, pass_id)
             self.region_read.emit(token, inner, [w for w in words if inner.contains(w.rect.center())])
+
+        threading.Thread(target=work, daemon=True).start()
+        return token
+
+    def crop(self, area, bounds):
+        r = area.intersected(bounds)
+        d = self.dpr
+        image = self.shot.copy(QRect(round(r.x() * d), round(r.y() * d), round(r.width() * d), round(r.height() * d)))
+        image.setDevicePixelRatio(1.0)
+        return image
+
+    def scan(self, area, bounds):
+        self._token += 1
+        token = self._token
+        image = self.crop(area, bounds)
+
+        def work():
+            codes = []
+            if barcode.available() and not image.isNull():
+                side = min(image.width(), image.height())
+                k = min(4, math.ceil(SCAN_SIDE / side)) if 0 < side < SCAN_SIDE else 1
+                big = image.scaled(image.size() * k, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.FastTransformation) if k > 1 else image
+                fd, path = tempfile.mkstemp(suffix=".png", dir="/dev/shm" if os.path.isdir("/dev/shm") else None)
+                os.close(fd)
+                try:
+                    codes = barcode.scan(path) if big.save(path, "PNG") else []
+                finally:
+                    os.unlink(path)
+            thumb = image.scaled(48, 48, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                 Qt.TransformationMode.FastTransformation).convertToFormat(QImage.Format.Format_RGB32)
+            pixels = [((c >> 16) & 255, (c >> 8) & 255, c & 255)
+                      for c in (thumb.pixel(x, y) for y in range(thumb.height()) for x in range(thumb.width()))]
+            self.image_read.emit(token, codes, palette.dominant(pixels))
 
         threading.Thread(target=work, daemon=True).start()
         return token

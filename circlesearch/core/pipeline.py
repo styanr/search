@@ -6,7 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Callable
 
-from circlesearch.core import plugins
+from circlesearch.core import layout, plugins
 from circlesearch.core.net import safe
 from circlesearch.core.registry import Registry
 from circlesearch.core.routing import Route, default_router
@@ -110,16 +110,20 @@ class Pipeline:
             self._router = default_router()
         return self._router
 
-    def route(self, text):
+    def route(self, text, words=None):
+        router = self.router
         try:
-            return self.router.route(text)
+            found = layout.detect(text, words)
+            route = Route(found[0], text=text.strip(), value=found[1]) if found else router.route(text)
         except Exception as e:
-            print(f"context: router {self.router.name!r} failed: {e}", file=sys.stderr)
-            return Route("not_text")
+            print(f"context: router {router.name!r} failed: {e}", file=sys.stderr)
+            route = Route("not_text")
+        route.words, route.source = words, text
+        return route
 
-    def run(self, text, on_route, on_card, on_extra, job=None):
+    def run(self, text, on_route, on_card, on_extra, job=None, words=None, route=None):
         job = job or Job()
-        route = self.route(text)
+        route = route or self.route(text, words)
         r = resolvers.get(route.kind)
         if job.cancelled:
             return
@@ -137,7 +141,8 @@ class Pipeline:
         if card is not None and card.facts:
             enrich(card.facts, on_extra, cancelled=lambda: job.cancelled)
 
-    def start(self, text, on_route, on_card, on_extra):
+    def start(self, text, on_route, on_card, on_extra, words=None, route=None):
         job = Job()
-        threading.Thread(target=self.run, args=(text, on_route, on_card, on_extra, job), daemon=True).start()
+        threading.Thread(target=self.run, args=(text, on_route, on_card, on_extra, job, words, route),
+                         daemon=True).start()
         return job

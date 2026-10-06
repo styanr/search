@@ -1,12 +1,14 @@
 import time
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import QAbstractButton, QHBoxLayout, QLineEdit, QWidget
 
+from circlesearch.core import history
 from circlesearch.ui.effects import draw_check, draw_glyph, draw_loader
 from circlesearch.ui import tokens as T
-from circlesearch.ui.motion import Spring, Tween, frame_timer, lerp, mix, with_alpha
+from circlesearch.ui.motion import MOTION, Spring, Tween, frame_timer, lerp, mix, ramp, with_alpha
+from circlesearch.ui.shapes import glyph
 from circlesearch.ui.theme import ON_PRIMARY, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SURFACE, SURFACE_HIGH, font
 
 
@@ -115,10 +117,161 @@ class PillButton(QAbstractButton):
         p.drawText(QRectF(x + sw, r.top(), tw + 2, r.height()), Qt.AlignmentFlag.AlignVCenter, self.text())
 
 
+class IconButton(PillButton):
+    def __init__(self, icon, tip):
+        super().__init__("")
+        self.icon = icon
+        self.setToolTip(tip)
+
+    def sizeHint(self):
+        return QSize(46, 46)
+
+    def paintEvent(self, _):
+        hover, press = self._hover.value, self._press.value
+        squish = max(0.0, self._squish.value)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.isEnabled():
+            p.setOpacity(0.4)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        scale = 1 - 0.06 * squish
+        p.translate(r.center()); p.scale(scale, scale); p.translate(-r.center())
+        radius = lerp(r.height() / 2, 12, squish)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(SURFACE_HIGH)
+        p.drawRoundedRect(r, radius, radius)
+        p.setBrush(with_alpha(ON_SURFACE, (T.HOVER_ALPHA * hover + T.PRESS_ALPHA * press) * 1.4 / 255))
+        p.drawRoundedRect(r, radius, radius)
+        inset = 13 - 1.5 * hover
+        glyph(p, self.icon, r.adjusted(inset, inset, -inset, -inset), mix(ON_SURFACE_VARIANT, ON_SURFACE, hover))
+
+
+class RecentList(QWidget):
+    picked = pyqtSignal(str)
+    ROW = 44
+    LIMIT = 6
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.entries = []
+        self.active = -1
+        self.hot = -1
+        self.open = Spring(520, 0.86)
+        self.t0 = time.monotonic()
+        self._last = time.monotonic()
+        self.timer = frame_timer(self, self._step)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hide()
+
+    def show_for(self, bar, query=""):
+        self.entries = history.recent(self.LIMIT, query)
+        if not self.entries:
+            self.close_list()
+            return False
+        self.active, self.hot = -1, -1
+        width = bar.width()
+        height = len(self.entries) * self.ROW + 16
+        below = bar.y() + bar.height() + 10
+        y = below if below + height < self.parent().height() - 16 else bar.y() - height - 10
+        self.setGeometry(bar.x(), y, width, height)
+        if not self.isVisible():
+            self.open.value, self.t0 = 0.0, time.monotonic()
+        self.open.set(1.0)
+        self.show()
+        self.raise_()
+        self._wake()
+        return True
+
+    def close_list(self):
+        if self.isVisible():
+            self.open.set(0.0)
+            self._wake()
+
+    def move_active(self, step):
+        if not self.entries:
+            return
+        self.active = (self.active + step) % len(self.entries)
+        self.update()
+
+    def current(self):
+        return self.entries[self.active]["text"] if 0 <= self.active < len(self.entries) else None
+
+    def _wake(self):
+        if not self.timer.isActive():
+            self._last = time.monotonic()
+            self.timer.start()
+
+    def _step(self):
+        now = time.monotonic()
+        moving = self.open.step(now - self._last)
+        self._last = now
+        if self.open.target == 0.0 and self.open.value < 0.02:
+            self.hide()
+            self.timer.stop()
+            return
+        self.update()
+        if not moving and (now - self.t0) / max(MOTION, 0.01) > 0.6:
+            self.timer.stop()
+
+    def _row_at(self, pos):
+        i = int((pos.y() - 8) // self.ROW)
+        return i if 0 <= i < len(self.entries) else -1
+
+    def mouseMoveEvent(self, e):
+        hot = self._row_at(e.position())
+        if hot != self.hot:
+            self.hot = hot
+            self.update()
+
+    def leaveEvent(self, e):
+        self.hot = -1
+        self.update()
+
+    def mousePressEvent(self, e):
+        i = self._row_at(e.position())
+        if i >= 0:
+            self.picked.emit(self.entries[i]["text"])
+
+    def paintEvent(self, _):
+        k = max(0.0, min(1.0, self.open.value))
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        h = r.height() * (0.4 + 0.6 * k)
+        box = QRectF(r.left(), r.top(), r.width(), h)
+        p.setOpacity(min(1.0, k * 1.4))
+        p.setPen(QPen(QColor(255, 255, 255, 18), 1))
+        p.setBrush(SURFACE)
+        p.drawRoundedRect(box, 26, 26)
+        p.setClipRect(box)
+        since = (time.monotonic() - self.t0) / max(MOTION, 0.01)
+        f = font(15, 450)
+        fm = QFontMetrics(f)
+        for i, e in enumerate(self.entries):
+            reveal = ramp(since, 0.04 * i, 0.25)
+            reveal = 1 - (1 - reveal) ** 3
+            row = QRectF(8, 8 + i * self.ROW + (1 - reveal) * 8, r.width() - 16, self.ROW)
+            p.setOpacity(min(1.0, k * 1.4) * reveal)
+            if i in (self.active, self.hot):
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(SURFACE_HIGH if i == self.active else with_alpha(ON_SURFACE, 0.06))
+                p.drawRoundedRect(row, 18, 18)
+            glyph(p, "history" if e["kind"] == "selection" else "clock", QRectF(row.left() + 14, row.center().y() - 9, 18, 18),
+                  ON_SURFACE_VARIANT)
+            p.setFont(f)
+            p.setPen(ON_SURFACE)
+            text = fm.elidedText(e["text"], Qt.TextElideMode.ElideRight, int(row.width() - 60))
+            p.drawText(QRectF(row.left() + 46, row.top(), row.width() - 60, row.height()), Qt.AlignmentFlag.AlignVCenter, text)
+
+
 class SearchBar(QWidget):
     textSearch = pyqtSignal(str)
     imageSearch = pyqtSignal()
     copy = pyqtSignal(str)
+    pin = pyqtSignal()
+    recall = pyqtSignal(str)
+    edited = pyqtSignal(str)
 
     HEIGHT = 66
 
@@ -134,6 +287,7 @@ class SearchBar(QWidget):
         pal.setColor(QPalette.ColorRole.PlaceholderText, ON_SURFACE_VARIANT)
         self.edit.setPalette(pal)
         self.edit.returnPressed.connect(self.run_default)
+        self.edit.installEventFilter(self)
 
         self.text_btn = PillButton("Search text", busy_text="Reading text…")
         self.image_btn = PillButton("Search image")
@@ -141,12 +295,19 @@ class SearchBar(QWidget):
         self.text_btn.clicked.connect(lambda: self.textSearch.emit(self.edit.text()))
         self.image_btn.clicked.connect(self.imageSearch.emit)
         self.copy_btn.clicked.connect(lambda: self.copy.emit(self.edit.text()))
+        self.pin_btn = IconButton("pin", "Pin to screen (Ctrl+P)")
+        self.pin_btn.clicked.connect(self.pin.emit)
+        self.recent = RecentList(parent)
+        self.recent.picked.connect(self._pick)
+        self._debounce = QTimer(self, singleShot=True, interval=450,
+                                timeout=lambda: self.edited.emit(self.edit.text()))
+        self.edit.textEdited.connect(self._text_edited)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(54, 10, 10, 10)
         layout.setSpacing(6)
         layout.addWidget(self.edit, 1)
-        for b in (self.text_btn, self.image_btn, self.copy_btn):
+        for b in (self.text_btn, self.image_btn, self.copy_btn, self.pin_btn):
             layout.addWidget(b)
         self.resize(820, self.HEIGHT)
         self.prefer_text = False
@@ -177,6 +338,57 @@ class SearchBar(QWidget):
         p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
         draw_glyph(p, QPointF(31, r.center().y()), radius=9, width=3)
 
+    def _text_edited(self, text):
+        has_text = bool(text.strip())
+        self.text_btn.setEnabled(has_text)
+        self.copy_btn.setEnabled(has_text)
+        if self.recent.isVisible():
+            if not self.recent.show_for(self, text):
+                self.recent.close_list()
+        self._debounce.start()
+
+    def _pick(self, text):
+        self.recent.close_list()
+        self.edit.setText(text)
+        self.edit.setCursorPosition(len(text))
+        self.prefer_text = True
+        self.text_btn.setEnabled(True)
+        self.copy_btn.setEnabled(True)
+        self.text_btn.set_primary(True)
+        self.image_btn.set_primary(False)
+        self.recall.emit(text)
+
+    def open_recent(self):
+        return self.recent.show_for(self, self.edit.text() if self.edit.isModified() else "")
+
+    def close_recent(self):
+        self.recent.close_list()
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        if self.recent.isVisible():
+            self.recent.show_for(self, self.edit.text() if self.edit.isModified() else "")
+
+    def eventFilter(self, obj, e):
+        if obj is self.edit and e.type() == QEvent.Type.KeyPress:
+            key = e.key()
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                if not self.recent.isVisible() or self.recent.open.target == 0.0:
+                    if key == Qt.Key.Key_Down:
+                        self.open_recent()
+                    return True
+                self.recent.move_active(1 if key == Qt.Key.Key_Down else -1)
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.recent.isVisible() and self.recent.current():
+                self._pick(self.recent.current())
+                return True
+        if obj is self.edit and e.type() == QEvent.Type.ShortcutOverride and e.key() == Qt.Key.Key_Escape \
+                and self.recent.isVisible() and self.recent.open.target > 0:
+            self.recent.close_list()
+            e.accept()
+            return True
+        return super().eventFilter(obj, e)
+
     def set_selection(self, text, prefer_text, reading=False):
         self.text_btn.set_spinning(reading)
         self.edit.setPlaceholderText("Search with Google Lens")
@@ -186,8 +398,19 @@ class SearchBar(QWidget):
         self.prefer_text = prefer_text and has_text
         self.text_btn.setEnabled(has_text)
         self.copy_btn.setEnabled(has_text)
+        self.image_btn.setEnabled(True)
+        self.pin_btn.setEnabled(True)
         self.text_btn.set_primary(self.prefer_text)
         self.image_btn.set_primary(not self.prefer_text)
+
+    def set_typing(self):
+        self.set_selection("", True)
+        self.edit.setPlaceholderText("Search or paste")
+        self.prefer_text = True
+        self.image_btn.setEnabled(False)
+        self.pin_btn.setEnabled(False)
+        self.text_btn.set_primary(True)
+        self.image_btn.set_primary(False)
 
     def run_default(self):
         if self.prefer_text or (self.edit.isModified() and self.edit.text().strip()):

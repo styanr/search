@@ -9,3 +9,4 @@ OCR_LANGUAGES = os.environ.get("CIRCLE_SEARCH_OCR_LANGUAGES", "")
 LANGUAGE = os.environ.get("CIRCLE_SEARCH_LANGUAGE", "")
 CURRENCY = os.environ.get("CIRCLE_SEARCH_CURRENCY", "")
 UNITS = os.environ.get("CIRCLE_SEARCH_UNITS", "").lower()
+HISTORY = os.environ.get("CIRCLE_SEARCH_HISTORY", "1") != "0"

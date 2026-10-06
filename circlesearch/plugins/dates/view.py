@@ -3,10 +3,10 @@ from datetime import date, timedelta
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QColor, QPen
 
-from circlesearch.plugins.dates import DateCard
+from circlesearch.plugins.dates import DateCard, EventCard
 from circlesearch.ui import tokens as T
 from circlesearch.ui.cards import CardView, Chip, view
-from circlesearch.ui.shapes import STARS, star_path
+from circlesearch.ui.shapes import STARS, glyph, shape_path, star_path
 from circlesearch.ui.theme import type_font
 
 
@@ -43,5 +43,44 @@ class DateView(CardView):
             if cur.weekday() == 0:
                 rows += 1
         y += rows * chh + T.SECTION
+        y = self.button_group(p, card.actions, y, targets)
+        return self.footer(p, y, targets)
+
+
+@view(EventCard)
+class EventView(CardView):
+    def layout(self, p, targets):
+        card, pad = self.card, self.PAD
+        start, end = card.start, card.end
+        tile = QRectF(pad, pad, 76, 84)
+        if p:
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(self.container())
+            p.drawPath(shape_path("squircle", tile))
+        self.text(p, start.strftime("%b").upper(), tile.left(), tile.top() + 12, tile.width(), "caption",
+                  self.on_container(), align="center", weight=700)
+        self.text(p, str(start.day), tile.left(), tile.top() + 26, tile.width(), "headline", self.on_container(),
+                  align="center")
+        self.text(p, start.strftime("%a"), tile.left(), tile.top() + 60, tile.width(), "caption", self.on_container(),
+                  align="center")
+        tx, tw = pad + tile.width() + 16, self.inner - tile.width() - 16
+        h = self.text(p, card.title, tx, pad + 2, tw, "headline", lines=2)[0]
+        if card.all_day:
+            when = "All day"
+        else:
+            when = f"{start:%H:%M} – {end:%H:%M}" + (f" (+{(end.date() - start.date()).days})" if end.date() != start.date() else "")
+        h2 = self.text(p, when, tx, pad + 4 + h, tw, "subhead", self.c["primary"])[0]
+        ty = pad + 4 + h + h2 + 2
+        place = card.location or card.link
+        if place:
+            if p:
+                glyph(p, "place", QRectF(tx - 1, ty + 1, 16, 16), self.c["on_surface_variant"])
+            ty += self.text(p, place, tx + 20, ty, tw - 20, "body", self.c["on_surface_variant"])[0]
+        y = max(tile.bottom(), ty) + T.SECTION
+        chips = [Chip(card.relative, "quiet")]
+        if not card.all_day:
+            minutes = round((end - start).total_seconds() / 60)
+            chips.append(Chip(f"{minutes // 60} h {minutes % 60} min".replace(" 0 min", "").replace("0 h ", ""), "quiet",
+                              icon="clock"))
+        y = self.chip_row(p, chips, y, small=True)
         y = self.button_group(p, card.actions, y, targets)
         return self.footer(p, y, targets)

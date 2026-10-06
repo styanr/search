@@ -7,7 +7,7 @@ from circlesearch.ui.motion import AMBIENT, CARD_SPRING, MOTION, Tween, lerp
 from circlesearch.ui.theme import PALETTE
 
 MAX_CARDS = 5
-MAX_TEXT = 600
+MAX_TEXT = 8000
 BALANCE = 160
 BATCH_MS = 250
 GAP = 12
@@ -18,8 +18,9 @@ def shadow_rect(widget):
 
 
 class CardBoard:
-    def __init__(self, host, on_copy, on_open):
+    def __init__(self, host, on_copy, on_open, on_pin=None, on_save=None, on_run=None):
         self.host, self.on_copy, self.on_open = host, on_copy, on_open
+        self.on_pin, self.on_save, self.on_run = on_pin, on_save, on_run
         self.cards = []
         self._col = {}
         self._cols = None
@@ -30,13 +31,14 @@ class CardBoard:
         self._text = None
         self._token = None
 
-    def request(self, text):
+    def request(self, text, words=None, route=None):
         text = text.strip()
-        if text == self._text:
+        key = ("route", route.kind, route.text) if route is not None else text
+        if key == self._text:
             return
         self.clear()
-        self._text = text
-        if not settings.CARDS or not text or len(text) > MAX_TEXT:
+        self._text = key
+        if not settings.CARDS or (route is None and (not text or len(text) > MAX_TEXT)):
             return
         if self.feed is None:
             from circlesearch.ui.feed import CardFeed
@@ -44,7 +46,11 @@ class CardBoard:
             self.feed.routed.connect(self._routed)
             self.feed.ready.connect(self._ready)
             self.feed.extra.connect(self._extra)
-        self._token = self.feed.start(text)
+        self._token = self.feed.start(text, words, route)
+
+    @property
+    def text(self):
+        return self._text if isinstance(self._text, str) else None
 
     def clear(self, keep_request=False):
         for card in self.cards:
@@ -72,10 +78,17 @@ class CardBoard:
     def _new_card(self, role="secondary"):
         from circlesearch.ui.cards import CardWidget
         _, width = self.columns()
-        card = CardWidget(self.host, PALETTE, ambient=AMBIENT, width=round(width), role=role)
+        card = CardWidget(self.host, PALETTE, ambient=AMBIENT, width=round(width), role=role,
+                          pinnable=self.on_pin is not None)
         card.hide()
         card.copyRequested.connect(self.on_copy)
         card.openRequested.connect(self.on_open)
+        if self.on_pin:
+            card.pinRequested.connect(self.on_pin)
+        if self.on_save:
+            card.saveRequested.connect(self.on_save)
+        if self.on_run:
+            card.runRequested.connect(self.on_run)
         return card
 
     def _routed(self, token, route, placeholder):

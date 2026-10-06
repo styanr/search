@@ -1,15 +1,16 @@
 import math
 import os
+import re
 import tempfile
 import threading
 import time
 
-from PyQt6.QtCore import QPointF, QRect, QRectF, QSizeF, Qt, QTimer
+from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QBrush, QColor, QFontMetrics, QGuiApplication, QImage, QKeySequence, QLinearGradient,
                          QPainter, QPainterPath, QPen, QPixmap, QShortcut)
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
-from circlesearch.core import actions, settings
+from circlesearch.core import actions, history, settings
 from circlesearch.core.ocr import join_words
 from circlesearch.core.textindex import TextIndex
 from circlesearch.ui.board import CardBoard, shadow_rect
@@ -41,8 +42,15 @@ def copy_text(text):
         QGuiApplication.clipboard().setText(text)
 
 
+SENSITIVE = ("jwt", "wifi", "otp")
+
+
 class Overlay(QWidget):
-    def __init__(self, screenshot: QImage, screen, instant=False):
+    closed = pyqtSignal()
+    selecting = pyqtSignal(object)
+    finished = pyqtSignal(object)
+
+    def __init__(self, screenshot: QImage, screen, instant=False, scale=None):
         super().__init__()
         self.setWindowTitle("Circle to Search")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
@@ -50,11 +58,12 @@ class Overlay(QWidget):
         self.setMouseTracking(True)
         self.instant = instant
 
-        self.dpr = screen.devicePixelRatio()
+        self.dpr = scale or screen.devicePixelRatio()
         geo = screen.geometry()
+        self.origin = geo.topLeft()
         phys = QRect(round(geo.x() * self.dpr), round(geo.y() * self.dpr),
                      round(geo.width() * self.dpr), round(geo.height() * self.dpr))
-        if screenshot.size() != phys.size():
+        if scale is None and screenshot.size() != phys.size():
             screenshot = screenshot.copy(phys)
         self.shot = screenshot
         self.shot.setDevicePixelRatio(self.dpr)
@@ -81,8 +90,16 @@ class Overlay(QWidget):
         self.reader = TextReader(self.shot, self.dpr, self.debug_dir, self)
         self.reader.screen_read.connect(self._ocr_done)
         self.reader.region_read.connect(self._region_done)
+        self.reader.image_read.connect(self._image_done)
         self._reading_screen = False
-        self.board = CardBoard(self, self._card_copy, self._card_open)
+        self._scan = None
+        self.code_route = None
+        self.colors = []
+        self._logged = []
+        self._pinned = None
+        self.typed = False
+        self.ocr_gate = None
+        self.board = CardBoard(self, self._card_copy, self._card_open, self._card_pin, self._card_save, self._card_run)
 
         self.t0 = time.monotonic()
         self.intro = Tween(0.8)
@@ -113,21 +130,77 @@ class Overlay(QWidget):
         self.bar.textSearch.connect(self.do_text_search)
         self.bar.imageSearch.connect(self.do_image_search)
         self.bar.copy.connect(self.do_copy)
+        self.bar.pin.connect(self.do_pin)
+        self.bar.recall.connect(self._recall)
+        self.bar.edited.connect(self._typed_text)
 
         QShortcut(QKeySequence("Escape"), self, self.dismiss)
         QShortcut(QKeySequence("Ctrl+Return"), self, self.do_image_search)
         QShortcut(QKeySequence("Ctrl+C"), self, self._copy_shortcut)
+        QShortcut(QKeySequence("Ctrl+P"), self, self.do_pin)
 
     def card_anchor(self):
         bar = QRectF(self.bar_to if self.bar_to is not None else QPointF(self.bar.pos()), QSizeF(self.bar.size()))
-        return bar, self.selection
+        return bar, self.selection if self.selection is not None else bar
 
     def cards_wanted(self):
-        return self.selection is not None and self.exit is None
+        return (self.selection is not None or self.typed) and self.exit is None
+
+    def global_point(self, local):
+        return self.origin + QPoint(round(local.x()), round(local.y()))
+
+    def _flash(self, text, ms=1400):
+        self.status = text
+        self.chip.set(1.0)
+        self.update()
+        QTimer.singleShot(round(ms * max(MOTION, 0.4)), lambda: self._end_flash(text))
+
+    def _end_flash(self, text):
+        if self.status == text:
+            self.status = ""
+            self.update()
+
+    def _request_cards(self, text, words):
+        if self.code_route is not None:
+            return
+        if not text.strip():
+            if self.colors and self.index.ready:
+                self.board.request("", route=self._palette_route())
+            return
+        if not self._prefers_text(words) and len(words) <= 2 and self.colors and len(text.strip()) <= 3:
+            self.board.request("", route=self._palette_route())
+            return
+        self.board.request(text, words)
+        self._remember(text)
+
+    def _palette_route(self):
+        from circlesearch.core.routing import Route
+        return Route("palette", text=",".join(self.colors), value=self.colors)
+
+    def _remember(self, text):
+        text = " ".join(text.split())
+        if text and text not in self._logged and not re.search(r"eyJ[\w-]{8,}\.|otpauth://|WIFI:", text):
+            self._logged.append(text)
+
+    def _image_done(self, token, codes, colors):
+        if token != self._scan or self.selection is None:
+            return
+        self.colors = colors
+        if codes:
+            from circlesearch.plugins.codes import is_sensitive, route_for
+            self.code_route = route_for(codes[0])
+            self.board.request("", route=self.code_route)
+            if not is_sensitive(codes[0].data) and not self.bar.edit.isModified():
+                self.bar.set_selection(codes[0].data, True)
+            return
+        if self.index.ready and not self.reading and not self.selected_words:
+            self._request_cards("", [])
 
     def _start_ocr(self):
         if not self.reader.available():
             self.index.set_screen([])
+            if self.ocr_gate is not None:
+                self.ocr_gate(self)
             return
         self.reader.read_screen()
 
@@ -140,6 +213,8 @@ class Overlay(QWidget):
 
     def _ocr_done(self, words):
         self.index.set_screen(words)
+        if self.ocr_gate is not None:
+            self.ocr_gate(self)
         if self.selection is not None and self.reading:
             self.reading = False
             self._apply_selection_words(provisional=True)
@@ -168,8 +243,9 @@ class Overlay(QWidget):
             self.selected_words = new
             self._start_word_reveal()
             self.words_t0 -= 10
-            self.bar.set_selection(new_text, self._prefers_text(new))
-            self.board.request(new_text)
+            if self.code_route is None:
+                self.bar.set_selection(new_text, self._prefers_text(new))
+            self._request_cards(new_text, new)
             self.update(self.selection.adjusted(-24, -24, 24, 24).toAlignedRect())
         if self.instant:
             self.bar.run_default()
@@ -181,9 +257,11 @@ class Overlay(QWidget):
         self.ticker.start()
         if not self._reading_screen:
             self._reading_screen = True
-            QTimer.singleShot(30, self._start_ocr)
+            if self.ocr_gate is None:
+                QTimer.singleShot(30, self._start_ocr)
             if settings.CARDS:
                 threading.Thread(target=self._load_cards, daemon=True).start()
+
         super().showEvent(event)
 
     @staticmethod
@@ -203,7 +281,7 @@ class Overlay(QWidget):
         working = self.reading
         if self.exit is None:
             self.aurora.set(0.85 if working else 0.5)
-            self.chip.set(1.0 if (self.selection is None or self.status) else 0.0)
+            self.chip.set(1.0 if ((self.selection is None and not self.typed) or self.status) else 0.0)
             self.scrim_selected.set(1.0 if self.selection is not None else 0.0)
 
         if self.bar_tween is not None:
@@ -292,15 +370,26 @@ class Overlay(QWidget):
         if self.exit is not None:
             return
         self.exit = Tween(0.16)
+        self.finished.emit(self)
+        self.bar.close_recent()
         if self.bar.isVisible():
             self._snapshot(self.bar, SearchBar.HEIGHT / 2)
         for card in self.board.cards:
-            if card.isVisible():
+            if card is self._pinned:
+                card.hide()
+            elif card.isVisible():
                 self._snapshot(card, card.radius())
         self.bar.hide()
         self.ink = None
         if self.exit.duration <= 0:
             self.close()
+
+    def closeEvent(self, e):
+        for text in self._logged[-3:]:
+            history.add("selection", text)
+        self._logged = []
+        self.closed.emit()
+        super().closeEvent(e)
 
     def mousePressEvent(self, e):
         if self.exit is not None or self._leaving:
@@ -309,6 +398,7 @@ class Overlay(QWidget):
             self._clear_selection()
             return
         if e.button() == Qt.MouseButton.LeftButton:
+            self.selecting.emit(self)
             self.ink = InkStroke(self.size(), self.dpr, e.position())
             self.update(self.ink.bounds.toAlignedRect())
 
@@ -331,8 +421,51 @@ class Overlay(QWidget):
             ink.finish()
             self.ghost = (ink, Tween(0.22))
             self._set_selection(target, bounds, min(bounds.width(), bounds.height()) / 2)
+            self._scan = self.reader.scan(target, QRectF(self.rect()))
             self._finish_selection()
         self.update()
+
+    def keyPressEvent(self, e):
+        blocked = e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier |
+                                   Qt.KeyboardModifier.MetaModifier)
+        if self.selection is None and not self.typed and self.exit is None and not blocked:
+            ch = e.text()
+            if ch and ch.isprintable() and not ch.isspace():
+                self._start_typing(ch)
+                return
+            if e.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Down, Qt.Key.Key_Space):
+                self._start_typing("")
+                return
+        super().keyPressEvent(e)
+
+    def _start_typing(self, text):
+        self.typed = True
+        self.code_route = None
+        self.board.clear()
+        self.bar.set_typing()
+        w = min(820, self.width() - 32)
+        self.bar.resize(w, SearchBar.HEIGHT)
+        self._place_bar(QPointF((self.width() - w) / 2, self.height() * 0.22))
+        self.bar.edit.setText(text)
+        self.bar.edit.setModified(True)
+        self.bar.edit.setCursorPosition(len(text))
+        self.bar._text_edited(text)
+        if not text:
+            QTimer.singleShot(round(160 * MOTION), self.bar.open_recent)
+        self.update()
+
+    def _recall(self, text):
+        self.code_route = None
+        self.board.request(text)
+
+    def _typed_text(self, text):
+        if self.exit is not None or (self.selection is None and not self.typed):
+            return
+        self.code_route = None
+        if text.strip():
+            self.board.request(text)
+        else:
+            self.board.clear()
 
     def _copy_shortcut(self):
         if self.bar.edit.hasSelectedText():
@@ -345,6 +478,10 @@ class Overlay(QWidget):
         self.shape_tween = Tween(0.5, SPRING)
         self.frame_tween = None
         self.selection = target
+        self.typed = False
+        self.code_route = None
+        self.colors = []
+        self._scan = None
         self.board.clear()
         self.selection_light = self._mean_lightness(target) > 0.5
 
@@ -360,6 +497,8 @@ class Overlay(QWidget):
 
     def _clear_selection(self):
         self.selection = None
+        self.typed = False
+        self.code_route = None
         self.selected_words = []
         self._pending = None
         self.reading = False
@@ -406,8 +545,11 @@ class Overlay(QWidget):
         self.frame_tween = Tween(FRAME_SETTLE)
         self._start_word_reveal()
         text = join_words(self.selected_words)
-        self._show_bar(text, self._prefers_text(self.selected_words))
-        self.board.request(text)
+        if self.code_route is None:
+            self._show_bar(text, self._prefers_text(self.selected_words))
+        else:
+            self._show_bar(self.bar.edit.text(), True)
+        self._request_cards(text, self.selected_words)
         if self.instant and not provisional:
             self.bar.run_default()
 
@@ -415,15 +557,43 @@ class Overlay(QWidget):
         if self._leaving or self.exit is not None:
             return
         copy_text(text)
-        self._leaving = True
-        self.status = "Copied"
-        self.update()
-        QTimer.singleShot(round(1000 * min(0.35, max(0.25, 0.3 * MOTION))), self.dismiss)
+        self._flash("Copied")
 
     def _card_open(self, url):
         if self._leaving or self.exit is not None:
             return
         actions.open_url(url)
+        self.dismiss()
+
+    def _card_save(self, path):
+        if self._leaving or self.exit is not None:
+            return
+        actions.open_url("file://" + path)
+        self.dismiss()
+
+    def _card_run(self, payload):
+        if self._leaving or self.exit is not None:
+            return
+        ok = actions.run_command(payload["command"], payload.get("stdin"))
+        self._flash(payload.get("status", "Connecting") if ok else "Could not start " + payload["command"][0])
+
+    def _card_pin(self, widget):
+        if self._leaving or self.exit is not None or widget.card is None:
+            return
+        from circlesearch.ui.pin import pin_card
+        pin_card(widget.card, widget.assets, widget.WIDTH, widget.role, self.global_point(widget.pos()))
+        self._pinned = widget
+        self.dismiss()
+
+    def do_pin(self):
+        if self.selection is None or self._leaving or self.exit is not None:
+            return
+        from circlesearch.ui.pin import pin_image
+        r = self.selection
+        crop = self.shot.copy(QRect(round(r.x() * self.dpr), round(r.y() * self.dpr),
+                                    round(r.width() * self.dpr), round(r.height() * self.dpr)))
+        crop.setDevicePixelRatio(self.dpr)
+        pin_image(crop, self.global_point(r.topLeft()), join_words(self.selected_words))
         self.dismiss()
 
     def _start_word_reveal(self):
@@ -470,7 +640,9 @@ class Overlay(QWidget):
         y = sel.bottom() + 22
         if y + h > self.height() - 16:
             y = max(16, sel.top() - h - 22)
-        target = QPointF(x, y)
+        self._place_bar(QPointF(x, y))
+
+    def _place_bar(self, target):
         if self.bar.isVisible():
             if (target - QPointF(self.bar.pos())).manhattanLength() > 1:
                 self.bar_from = QPointF(self.bar.pos())
@@ -502,6 +674,7 @@ class Overlay(QWidget):
 
     def do_text_search(self, text):
         if text.strip() and not self._leaving:
+            history.add("search", text)
             actions.search_text(text)
             self.dismiss()
 
@@ -700,7 +873,7 @@ class Overlay(QWidget):
         if a <= 0.01:
             return
         working = self.reading or bool(self._pending and self._pending[0] == "tap")
-        text = self.status or "Circle or tap anything to search"
+        text = self.status or "Circle, tap or type to search"
         label_font = font(15, 480)
         fm = QFontMetrics(label_font)
         key_font = font(12, 600)
