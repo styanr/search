@@ -535,7 +535,7 @@ class Overlay(QWidget):
             self._paint_selection(p, now, t, fade)
         if self.ghost is not None:
             ink, tween = self.ghost
-            ink.paint(p, e.rect(), (1 - tween.value(now)) * fade, tip=False, fading=True)
+            ink.paint(p, e.rect(), (1 - tween.value(now)) * fade, tip=False)
         if self.ink is not None:
             self.ink.paint(p, e.rect())
         for widget, radius in ((self.bar, SearchBar.HEIGHT / 2), *((c, c.radius()) for c in self.board.cards)):

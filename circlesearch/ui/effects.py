@@ -1,7 +1,8 @@
 import math
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QConicalGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
+from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt
+from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
+                         QRadialGradient, QRegion)
 
 from circlesearch.ui.motion import mix, with_alpha
 from circlesearch.ui.shapes import STARS
@@ -126,12 +127,52 @@ def hue_at(distance):
     return mix(GOOGLE[i], GOOGLE[(i + 1) % len(GOOGLE)], x - i)
 
 
+def gaussian(sigma):
+    reach = math.ceil(3 * sigma)
+    weights = [math.exp(-x * x / (2 * sigma * sigma)) for x in range(-reach, reach + 1)]
+    total = sum(weights)
+    return reach, [w / total for w in weights]
+
+
+def blur_region(sharp, out, dirty, kernel):
+    reach, weights = kernel
+    bounds = sharp.rect()
+    inner = dirty.adjusted(-reach, -reach, reach, reach).intersected(bounds)
+    outer = inner.adjusted(-reach, -reach, reach, reach).intersected(bounds)
+    if inner.isEmpty():
+        return
+    fmt = QImage.Format.Format_RGBA64_Premultiplied
+    src = sharp.copy(outer).convertToFormat(fmt)
+    rows = QImage(inner.width(), outer.height(), fmt)
+    rows.fill(0)
+    p = QPainter(rows)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+    for i, w in enumerate(weights):
+        p.setOpacity(w)
+        p.drawImage(QPoint(outer.left() - inner.left() - (i - reach), 0), src)
+    p.end()
+    done = QImage(inner.width(), inner.height(), fmt)
+    done.fill(0)
+    p = QPainter(done)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+    for i, w in enumerate(weights):
+        p.setOpacity(w)
+        p.drawImage(QPoint(0, outer.top() - inner.top() - (i - reach)), rows)
+    p.end()
+    p = QPainter(out)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+    p.drawImage(inner.topLeft(), done)
+    p.end()
+
+
 class InkStroke:
-    GLOW_SCALE = 8
+    GLOW_SCALE = 2
+    GLOW_WIDTH = 26
+    GLOW_SIGMA = 3.0
+    GLOW_STRENGTH = 1.0
     MIN_STEP = 4.0
     SMOOTHING = 0.25
-    CORE_WIDTH, GLOW_WIDTH = 6, 20
-    GLOW_SPREAD = 5
+    CORE_WIDTH = 6
     TAPER = 60
     TIP_RADIUS = 22
     PAD = 36
@@ -140,9 +181,13 @@ class InkStroke:
         self.core = QImage(size * dpr, QImage.Format.Format_ARGB32_Premultiplied)
         self.core.setDevicePixelRatio(dpr)
         self.core.fill(0)
-        self.glow = QImage(size.width() // self.GLOW_SCALE + 2, size.height() // self.GLOW_SCALE + 2,
-                           QImage.Format.Format_ARGB32_Premultiplied)
+        glow_size = QSize(size.width() // self.GLOW_SCALE + 1, size.height() // self.GLOW_SCALE + 1)
+        self.glow = QImage(glow_size, QImage.Format.Format_ARGB32_Premultiplied)
         self.glow.fill(0)
+        self.halo = QImage(glow_size, QImage.Format.Format_ARGB32_Premultiplied)
+        self.halo.fill(0)
+        self._kernel = gaussian(self.GLOW_SIGMA)
+        self._dirty = QRect()
         self.points = [start]
         self._extent = [start.x(), start.y(), start.x(), start.y()]
         self.mid = start
@@ -207,36 +252,84 @@ class InkStroke:
         p.strokePath(path, highlight)
         self._last_highlight = (path, highlight)
         p.end()
+        s = self.GLOW_SCALE
         p = QPainter(self.glow)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.scale(1 / self.GLOW_SCALE, 1 / self.GLOW_SCALE)
+        p.scale(1 / s, 1 / s)
         p.strokePath(path, QPen(color, self.GLOW_WIDTH * taper, Qt.PenStyle.SolidLine,
                                 Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         p.end()
+        r = path.boundingRect().adjusted(-self.GLOW_WIDTH, -self.GLOW_WIDTH, self.GLOW_WIDTH, self.GLOW_WIDTH)
+        self._dirty = self._dirty.united(QRect(math.floor(r.left() / s), math.floor(r.top() / s),
+                                               math.ceil(r.width() / s) + 2, math.ceil(r.height() / s) + 2))
 
-    def paint(self, p, clip, alpha=1.0, tip=True, fading=False):
+    def _halo(self):
+        if not self._dirty.isEmpty():
+            blur_region(self.glow, self.halo, self._dirty, self._kernel)
+            self._dirty = QRect()
+        return self.halo
+
+    def _tail(self):
+        if self.cursor == self.mid:
+            return None
+        path = QPainterPath(self.mid)
+        path.lineTo(self.cursor)
+        at = self.length + path.length() / 2
+        return path, hue_at(at), self._taper(at)
+
+    def _tail_halo(self, path, color, taper):
+        s, reach = self.GLOW_SCALE, self._kernel[0]
+        r = path.boundingRect().adjusted(-self.GLOW_WIDTH, -self.GLOW_WIDTH, self.GLOW_WIDTH, self.GLOW_WIDTH)
+        band = QRect(math.floor(r.left() / s), math.floor(r.top() / s), math.ceil(r.width() / s) + 2,
+                     math.ceil(r.height() / s) + 2)
+        region = band.adjusted(-2 * reach, -2 * reach, 2 * reach, 2 * reach).intersected(self.glow.rect())
+        sharp = self.glow.copy(region)
+        q = QPainter(sharp)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing)
+        q.scale(1 / s, 1 / s)
+        q.translate(-region.left() * s, -region.top() * s)
+        q.strokePath(path, QPen(color, self.GLOW_WIDTH * taper, Qt.PenStyle.SolidLine,
+                                Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        q.end()
+        patch = self._halo().copy(region)
+        blur_region(sharp, patch, band.translated(-region.topLeft()), self._kernel)
+        return region, patch
+
+    def paint(self, p, clip, alpha=1.0, tip=True):
         area = QRectF(clip).intersected(self.bounds)
         if alpha <= 0.01 or area.isEmpty():
             return
         p.save()
+        p.setClipRect(area, Qt.ClipOperation.IntersectClip)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
-        s, k = self.GLOW_SCALE, self.GLOW_SPREAD
-        offsets = ((0, 0),) if fading else ((0, 0), (-k, -k), (k, -k), (-k, k), (k, k))
-        p.setOpacity(min(1.0, (0.6 if fading else 0.22) * alpha))
-        for dx, dy in offsets:
-            src = area.translated(dx, dy)
-            p.drawImage(area, self.glow, QRectF(src.x() / s, src.y() / s, src.width() / s, src.height() / s))
+        tail = self._tail()
+        halo = self._halo()
+        p.save()
+        p.setOpacity(min(1.0, self.GLOW_STRENGTH * alpha))
+        p.scale(self.GLOW_SCALE, self.GLOW_SCALE)
+        if tail is None:
+            p.drawImage(0, 0, halo)
+        else:
+            region, patch = self._tail_halo(*tail)
+            p.save()
+            p.setClipRegion(QRegion(halo.rect()).subtracted(QRegion(region)), Qt.ClipOperation.IntersectClip)
+            p.drawImage(0, 0, halo)
+            p.restore()
+            p.drawImage(region.topLeft(), patch)
+        p.restore()
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setOpacity(alpha)
         d = self.core.devicePixelRatio()
         p.drawImage(area, self.core, QRectF(area.x() * d, area.y() * d, area.width() * d, area.height() * d))
         color = hue_at(self.length)
-        if self.cursor != self.mid:
-            tail = QPainterPath(self.mid)
-            tail.lineTo(self.cursor)
-            for pen in self._pens(color, self._taper(self.length)):
-                p.setPen(pen)
-                p.drawPath(tail)
+        if tail is not None:
+            path, color, taper = tail
+            core, highlight = self._pens(color, taper)
+            p.strokePath(path, core)
+            if self._last_highlight is not None:
+                p.strokePath(*self._last_highlight)
+            p.strokePath(path, highlight)
         if tip:
             g = QRadialGradient(self.cursor, self.TIP_RADIUS)
             g.setColorAt(0.0, with_alpha(mix(color, QColor("white"), 0.35), 0.5 * alpha))
