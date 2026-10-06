@@ -41,9 +41,11 @@ class TextReader(QObject):
         self._pass_id += 1
         return self._pass_id
 
-    def _read(self, image, scale, offset, pass_id, background=False):
-        big = image.scaled(image.size() * OCR_SCALE, Qt.AspectRatioMode.IgnoreAspectRatio,
-                           Qt.TransformationMode.SmoothTransformation)
+    def _read(self, image, offset, pass_id, background=False):
+        factor = max(1, round(OCR_SCALE / self.dpr))
+        big = image if factor == 1 else image.scaled(image.size() * factor, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                                     Qt.TransformationMode.SmoothTransformation)
+        scale = factor * self.dpr
         fd, path = tempfile.mkstemp(suffix=".bmp", dir="/dev/shm" if os.path.isdir("/dev/shm") else None)
         os.close(fd)
         try:
@@ -60,7 +62,7 @@ class TextReader(QObject):
         def work():
             if self.debug_dir:
                 shot.save(os.path.join(self.debug_dir, "screenshot.png"))
-            self.screen_read.emit(self._read(shot, OCR_SCALE * self.dpr, Point(0, 0), pass_id, background=True))
+            self.screen_read.emit(self._read(shot, Point(0, 0), pass_id, background=True))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -76,7 +78,7 @@ class TextReader(QObject):
         offset = to_point(crop.topLeft())
 
         def work():
-            words = self._read(image, OCR_SCALE * d, offset, pass_id)
+            words = self._read(image, offset, pass_id)
             self.region_read.emit(token, inner, [w for w in words if inner.contains(w.rect.center())])
 
         threading.Thread(target=work, daemon=True).start()
