@@ -14,7 +14,7 @@ GLYPHS = {"Population": "people", "Area": "area", "Elevation": "mountain", "Foun
           "Chief executive": "person", "Employees": "people", "Industry": "tag", "Author": "person", "Artist": "person",
           "Directed by": "person", "Starring": "people", "Created by": "person", "Released": "calendar",
           "First published": "calendar", "First aired": "calendar", "Runtime": "clock", "Length": "clock",
-          "Genre": "tag", "Seasons": "tag"}
+          "Genre": "tag", "Seasons": "tag", "Rating": "star", "Pages": "tag"}
 
 
 @view(FactsCard)

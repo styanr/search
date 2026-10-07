@@ -192,7 +192,7 @@ languages = ["eng", "jpn"]
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `contact` | none | Your email or website. Sent to Wikimedia and OpenStreetMap only, because their rules ask for a contact. |
+| `contact` | none | Your email or website. Sent to Wikimedia, OpenStreetMap and Open Library only, because their rules ask for a contact. |
 | `cards` | `true` | Set to `false` to turn off cards. |
 | `history` | `true` | Set to `false` to stop saving recent selections and searches to `~/.local/share/circle-search/history.jsonl`. |
 | `gpu` | `"auto"` | Set to `"lite"` to stop the glow and shimmer from animating. This is automatic with software OpenGL (llvmpipe). |

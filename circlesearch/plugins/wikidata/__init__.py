@@ -6,7 +6,7 @@ from datetime import date
 
 from circlesearch.core.cards import Action, Card
 from circlesearch.core.locale import current
-from circlesearch.core.net import get_json
+from circlesearch.core.net import get_json, safe
 from circlesearch.core.pipeline import enricher
 
 WDQS = "https://query.wikidata.org/sparql?format=json&query="
@@ -87,6 +87,17 @@ def _date(iso):
         return date(int(m.group(2)), int(m.group(3)), int(m.group(4)))
     except ValueError:
         return m.group(2)
+
+
+work_extras = {}
+
+
+def work_extra(*kinds):
+    def register(run):
+        for kind in kinds:
+            work_extras.setdefault(kind, []).append(run)
+        return run
+    return register
 
 
 def genres(labels):
@@ -180,8 +191,16 @@ def wikidata_facts(facts):
             work = "song"
 
     rows, new = [], {}
+    extra_actions = []
     if work:
         rows, new = work_rows(work, claims, labels, first, year, imdb)
+        info = {"name": re.sub(r"\s*\([^)]*\)\s*$", "", facts.get("title", "")).strip(),
+                "people": labels("P50" if work == "book" else "P175", 1), "facts": new}
+        for run in work_extras.get(work, []):
+            found = safe(run, info)
+            if found:
+                rows += found[0]
+                extra_actions += found[1]
     elif is_person:
         born, died = first("P569"), first("P570")
         if born:
@@ -246,7 +265,7 @@ def wikidata_facts(facts):
         return [], new
     actions = [Action("Website", "open", first("P856"))] if first("P856") else []
     if work:
-        actions = work_actions(claims, first, imdb)
+        actions = work_actions(claims, first, imdb) + extra_actions
     title = None
     if work:
         kind = {"album": "Album", "song": "Song", "book": "Book", "film": "Film", "series": "TV series"}[work]
