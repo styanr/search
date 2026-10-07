@@ -19,6 +19,8 @@ class Route:
     value: Any = None
     words: list | None = None
     source: str = ""
+    fallback: str = ""
+    placeholder: bool | None = None
 
 
 @dataclass
@@ -128,8 +130,23 @@ CONNECTORS = {"of", "the", "and", "in", "on", "at", "for", "to", "a", "an", "wit
 TITLE_WORD = re.compile(r"^[\w'’\-]+:?$")
 
 
-def title_like(words):
-    if not 4 <= len(words) <= 10 or not words[0][:1].isupper():
+TITLE_FALLBACKS = {"entity", "term", "plain_text", "foreign_text"}
+TRACK_NOISE = (re.compile(r"\s*[\(\[](?:feat|ft|featuring|with|remaster|official|live|lyrics?|audio|video|explicit)[^\)\]]*[\)\]]",
+                          re.I),
+               re.compile(r"\s+[-–—]\s*(?:topic|(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?|official.*|lyrics?.*)$", re.I),
+               re.compile(r"\s+[-–—]\s*(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?(?=\s+[-–—]\s)", re.I),
+               re.compile(r"\s+(?:feat|ft)\.?\s.+$", re.I))
+
+
+def clean_track(text):
+    for pattern in TRACK_NOISE:
+        text = pattern.sub("", text)
+    return text.strip()
+
+
+
+def title_like(words, minimum=4):
+    if not minimum <= len(words) <= 10 or not words[0][:1].isupper():
         return False
     if not all(TITLE_WORD.match(w) and (w[0].isupper() or w.lower() in CONNECTORS) for w in words):
         return False
@@ -141,6 +158,20 @@ class LocalRouter:
     name = "local"
 
     def route(self, text):
+        base = self._route(text)
+        if base.kind not in TITLE_FALLBACKS or len(base.text) > 90:
+            return base
+        words = [w.strip(EDGE_JUNK) or w for w in tidy(text).split()]
+        parts = [p.strip() for p in re.split(r"\s+[-–—]\s+", clean_track(base.text)) if p.strip()]
+        if len(parts) == 2 and all(2 <= len(p) <= 50 for p in parts):
+            return Route("track", text=base.text, value=parts, known_word=base.known_word, fallback=base.kind,
+                         placeholder=False)
+        if title_like(words, 3):
+            return Route("title", text=base.text, known_word=base.known_word, fallback=base.kind,
+                         placeholder=base.kind in ("entity", "term"))
+        return base
+
+    def _route(self, text):
         t = tidy(text)
         found = recognise(text, with_text=True)
         if found:
@@ -169,8 +200,6 @@ class LocalRouter:
             return Route("term", known_word=all_known, text=t)
         if len(plain_words) == len(words) and len(words) <= 6 and all(w[0].isupper() for w in words):
             return Route("entity", known_word=False, text=t)
-        if title_like(words) and len(t) <= 90:
-            return Route("title", text=t)
         if have_dict and plain_words:
             english_share = sum(known) / len(known)
             return Route("plain_text" if english_share >= 0.6 else "foreign_text",

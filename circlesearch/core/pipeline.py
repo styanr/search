@@ -133,7 +133,7 @@ class Pipeline:
         r = resolvers.get(route.kind)
         if job.cancelled:
             return
-        on_route(route, bool(r and r.placeholder))
+        on_route(route, route.placeholder if route.placeholder is not None else bool(r and r.placeholder))
         try:
             card = resolve(route)
         except Exception:

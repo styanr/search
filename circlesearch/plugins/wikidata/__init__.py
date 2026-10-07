@@ -13,12 +13,16 @@ WDQS = "https://query.wikidata.org/sparql?format=json&query="
 QLEVER = "https://qlever.dev/api/wikidata?query="
 WD_PROPS = ("P31 P17 P36 P37 P38 P474 P1082 P2046 P2044 P571 P577 P569 P570 P27 P106 P856 P1324 P277 P275 "
             "P178 P348 P159 P169 P1128 P452 P498 P297 P5568 P8262 P50 P57 P136 P161 P170 P175 P212 P957 P8383 P436 P435 P345 "
-            "P4947 P4983 P8600 P495 P2047 P2437 P2205 P2207").split()
+            "P4947 P4983 P8600 P495 P2047 P2437 P2205 P2207 P434 P527 P740 P569 P570").split()
 SPARQL_PREFIXES = ("PREFIX wd: <http://www.wikidata.org/entity/>\nPREFIX wdt: <http://www.wikidata.org/prop/direct/>\n"
                    "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nPREFIX schema: <http://schema.org/>\n")
 CREATOR = {"book": "P50", "film": "P57", "album": "P175", "song": "P175", "series": "P170"}
+HEIGHTS = {"series": 563, "film": 563, "book": 485, "album": 448, "song": 360}
+SONG_TYPES = {"Q7366", "Q134556", "Q105543609", "Q207628"}
+ALBUM_TYPES = {"Q482994", "Q208569", "Q209939", "Q222910", "Q169930"}
 WORK_TYPES = {"book": "Q8261 Q7725634 Q571 Q1667921 Q277759", "film": "Q11424 Q202866 Q24862 Q1107",
-              "album": "Q482994 Q208569 Q209939 Q222910 Q169930", "song": "Q7366 Q134556",
+              "album": "Q482994 Q208569 Q209939 Q222910 Q169930", "studio": "Q482994 Q208569",
+              "song": "Q7366 Q134556",
               "series": "Q5398426 Q581714 Q21191270"}
 
 
@@ -115,6 +119,17 @@ def work_card(title):
     return cards[0] if cards else None
 
 
+def album_card(title, artist):
+    data = safe(get_json, "https://en.wikipedia.org/w/rest.php/v1/search/page?"
+                + urllib.parse.urlencode({"q": f"{title} {artist}", "limit": 8})) or {}
+    pages = [p for p in data.get("pages", []) if re.search(r"\b(album|ep|mixtape)\b", p.get("description") or "", re.I)
+             and not re.search(r"soundtrack|score", p.get("description") or "", re.I)]
+    wanted = re.sub(r"\W+", " ", title.lower()).strip()
+    best = next((p for p in pages if re.sub(r"\W+", " ", re.sub(r"\s*\([^)]*\)$", "", p["title"]).lower()).strip()
+                 == wanted), pages[0] if pages else None)
+    return work_card(best["title"]) if best else None
+
+
 def more_by(person, prop, own, kind, limit=10):
     own_title = own[1].lower()
     own = own[0]
@@ -127,17 +142,16 @@ def more_by(person, prop, own, kind, limit=10):
   ?a schema:about ?w ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?title .
   OPTIONAL {{ ?w wdt:P577 ?d }}
 }} LIMIT 60""")
-    works, seen = [], {own_title}
+    years = {}
     for row in rows:
         title = row["title"]["value"]
-        key = title.lower()
-        if key in seen or ":" in title and title.startswith("List of"):
+        if title.lower() == own_title or title.startswith("List of"):
             continue
-        seen.add(key)
         stamp = _date(row["d"]["value"]) if row.get("d") else None
-        works.append((stamp.year if isinstance(stamp, date) else 0, title))
-    works.sort(key=lambda w: (-w[0], w[1]))
-    items = [Link(re.sub(r"\s*\([^)]*\)\s*$", "", t), str(y) if y else "", lambda t=t: work_card(t))
+        year = stamp.year if isinstance(stamp, date) else 0
+        years[title] = min((y for y in (years.get(title), year) if y), default=0)
+    works = sorted(((y, t) for t, y in years.items()), key=lambda w: (-w[0], w[1]))
+    items = [Link(re.sub(r"\s*\([^)]*\)\s*$", "", t), str(y) if y else "", lambda t=t: work_card(t), HEIGHTS[kind])
              for y, t in works[:limit]]
     return Detail("works", items) if items else None
 
@@ -180,12 +194,15 @@ def genres(labels):
 
 
 def work_rows(work, claims, labels, first, year, imdb):
+    kinds = {v for v, _, _, _ in claims.get("P31", [])}
     new = {}
     for key, pid in (("isbn", "P212"), ("tvmaze", "P8600")):
         if first(pid):
             new[key] = first(pid)
     if work == "album" and first("P436"):
         new["mb_rg"] = first("P436")
+    if work == "artist" and first("P434"):
+        new["mb_artist"] = first("P434")
     if imdb:
         new["imdb"] = imdb
     length = None
@@ -202,6 +219,10 @@ def work_rows(work, claims, labels, first, year, imdb):
             pass
     if work == "book":
         rows = [("Author", labels("P50", 3)), ("First published", year("P577") or ""), ("Genre", genres(labels))]
+    elif work == "artist":
+        start = "Born" if "Q5" in kinds else "Formed"
+        rows = [(start, year("P569") or year("P571") or ""), ("Genre", genres(labels)),
+                ("Members", labels("P527", 4)), ("From", labels("P495", 1) or labels("P740", 1))]
     elif work in ("album", "song"):
         rows = [("Artist", labels("P175", 3)), ("Released", year("P577") or ""), ("Genre", genres(labels))]
         if length:
@@ -252,18 +273,18 @@ def wikidata_facts(facts):
     is_org = any(p in claims for p in ("P1128", "P159", "P169", "P452")) and not (is_person or is_country)
     is_place = not (is_person or is_country or is_org or is_software) and ("P1082" in claims or "P2044" in claims)
     imdb = first("P345") if str(first("P345")).startswith("tt") else None
-    work = None
-    if not (is_person or is_country or is_org or is_software or is_place):
+    work = "artist" if "P434" in claims else None
+    if work is None and not (is_person or is_country or is_org or is_software or is_place):
         if any(p in claims for p in ("P2437", "P4983", "P8600")):
             work = "series"
         elif imdb or "P4947" in claims or "P57" in claims:
             work = "film"
         elif any(p in claims for p in ("P212", "P957", "P8383", "P50")):
             work = "book"
-        elif "P436" in claims:
-            work = "album"
-        elif "P435" in claims and "P175" in claims:
+        elif kinds & SONG_TYPES or ("P435" in claims and "P175" in claims and not kinds & ALBUM_TYPES):
             work = "song"
+        elif "P436" in claims or kinds & ALBUM_TYPES:
+            work = "album"
 
     rows, new = [], {}
     extra_actions, cover, sections = [], None, []
@@ -283,7 +304,7 @@ def wikidata_facts(facts):
             cover = summary.get("thumb") or cover
         if work in ("film", "series") and "P161" in claims:
             sections.insert(0, Section("Cast", lambda: cast_detail(qid)))
-        creator = claims.get(CREATOR[work], [None])[0]
+        creator = claims.get(CREATOR.get(work, ""), [None])[0]
         if creator and creator[0].startswith("Q") and (creator[1] or creator[2]):
             who = creator[1] or creator[2]
             own = (qid, facts.get("title", ""))
@@ -359,7 +380,7 @@ def wikidata_facts(facts):
         actions = work_actions(claims, first, imdb) + extra_actions
     title = None
     if work:
-        kind = {"album": "Album", "song": "Song", "book": "Book", "film": "Film", "series": "TV series"}[work]
+        kind = {"album": "Album", "song": "Song", "book": "Book", "film": "Film", "series": "TV series", "artist": "Artist"}[work]
         name = re.sub(r"\s*\([^)]*\)\s*$", "", facts.get("title", "")).strip()
         title = f"{name} · {kind}" if name else kind
     picture = None

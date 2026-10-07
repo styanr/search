@@ -22,6 +22,7 @@ class Link:
     label: str
     sub: str
     make: Callable[[], "Card | None"]
+    height: int = 0
 
 
 @dataclass
@@ -89,6 +90,7 @@ class Pending(Card):
     kind = "pending"
 
     label: str = ""
+    height: int = 0
 
 
 @dataclass(kw_only=True)

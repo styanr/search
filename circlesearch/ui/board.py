@@ -8,7 +8,7 @@ from circlesearch.core.net import safe
 from circlesearch.ui.motion import AMBIENT, CARD_SPRING, MOTION, Tween, lerp
 from circlesearch.ui.theme import PALETTE
 
-MAX_CARDS = 5
+MAX_CARDS = 8
 MAX_TEXT = 8000
 BALANCE = 160
 BATCH_MS = 250
@@ -137,7 +137,7 @@ class CardBoard:
             return
         from circlesearch.ui.feed import prepared
         token, feed = self._token, self.feed
-        feed.extra.emit(token, Pending(title="", slot=slot, label=f"Looking up {link.label}…"), None)
+        feed.extra.emit(token, Pending(title="", slot=slot, height=link.height, label=f"Looking up {link.label}…"), None)
 
         def work():
             card = safe(link.make)
@@ -178,7 +178,7 @@ class CardBoard:
                 if held is None and len(self.cards) < MAX_CARDS:
                     card = self._new_card()
                     card.slot = info.slot
-                    card.set_loading(info.label or "Looking it up…")
+                    card.set_loading(info.label or "Looking it up…", info.height or 124)
                     self._stagger[card] = len(fresh) * 0.04
                     self.cards.append(card)
                     fresh.append(card)
@@ -196,10 +196,8 @@ class CardBoard:
             self.cards.append(card)
         self.layout()
 
-    def _plan(self, cols):
-        if self._cols != cols:
-            self._col, self._cols = {}, cols
-        col_of = self._col
+    def _plan(self, cols, fresh=False):
+        col_of = {} if fresh else {card: c for card, c in self._col.items() if c < cols and card in self.cards}
         heights, spots = [0.0] * cols, {}
         for card in self.cards:
             if card not in col_of:
@@ -213,7 +211,7 @@ class CardBoard:
             c = col_of[card]
             spots[card] = (c, heights[c])
             heights[c] += card.layout_height() + GAP
-        return spots, heights
+        return spots, heights, col_of
 
     def _options(self, colw):
         bar, sel = self.host.card_anchor()
@@ -241,6 +239,7 @@ class CardBoard:
             x = block.right() + GAP + 4 if side == "right" else block.left() - GAP - 4 - width
             y = min(max(screen.top(), block.top()), screen.bottom() - height)
         if not strict:
+            self._natural_top = y
             x = min(max(screen.left(), x), max(screen.left(), screen.right() - width))
             y = min(max(screen.top(), y), max(screen.top(), screen.bottom() - height))
             return QRectF(x, y, width, height)
@@ -249,7 +248,22 @@ class CardBoard:
             return None
         return rect
 
-    def layout(self, evict=True):
+    def _relieve(self, spots, heights, rect, cols):
+        limit = self.host.height() - 16
+        newest = max((c.opened_at for c in self.cards), default=0.0)
+        top = getattr(self, "_natural_top", rect.top())
+        for c in range(cols):
+            if top + heights[c] - GAP <= limit + 1:
+                continue
+            opened = [card for card in self.cards if spots[card][0] == c and card.open_section is not None
+                      and card.opened_at < newest]
+            if opened:
+                victim = min(opened, key=lambda card: card.opened_at)
+                victim.toggle_section(victim.open_section)
+                return True
+        return False
+
+    def layout(self, evict=True, _depth=0):
         _, colw = self.columns()
         options = list(self._options(colw))
         if not evict and self._choice in options:
@@ -259,15 +273,17 @@ class CardBoard:
             choice = None
             if not evict and self._choice in options:
                 side, cols = self._choice
-                spots, heights = self._plan(cols)
-                choice = (side, cols, spots, heights, self._rect(side, cols, colw, max(heights) - GAP, strict=False))
-            for side, cols in options:
-                if choice is not None:
-                    break
-                spots, heights = self._plan(cols)
-                rect = self._rect(side, cols, colw, max(heights) - GAP)
-                if rect is not None:
-                    choice = (side, cols, spots, heights, rect)
+                spots, heights, assigned = self._plan(cols)
+                choice = (side, cols, spots, heights, self._rect(side, cols, colw, max(heights) - GAP, strict=False),
+                          assigned)
+            for fresh in (False, True):
+                for side, cols in options:
+                    if choice is not None:
+                        break
+                    spots, heights, assigned = self._plan(cols, fresh)
+                    rect = self._rect(side, cols, colw, max(heights) - GAP)
+                    if rect is not None:
+                        choice = (side, cols, spots, heights, rect, assigned)
             if choice or len(self.cards) <= 1 or not evict:
                 break
             victim = max(self.cards[1:], key=lambda c: c.card.priority if c.card else 9)
@@ -279,14 +295,23 @@ class CardBoard:
             victim.hide()
             victim.deleteLater()
         if choice is None:
-            spots, heights = self._plan(1)
+            spots, heights, assigned = self._plan(1)
             bar, _ = self.host.card_anchor()
             choice = ("below", 1, spots, heights,
-                      QRectF(bar.left(), min(bar.bottom() + GAP, self.host.height() - 16 - heights[0]), colw, heights[0]))
-        side, cols, spots, heights, rect = choice
+                      QRectF(bar.left(), min(bar.bottom() + GAP, self.host.height() - 16 - heights[0]), colw, heights[0]),
+                      assigned)
+        side, cols, spots, heights, rect, assigned = choice
         self._choice = (side, cols)
+        self._col = assigned
+        if not evict and side != "above" and _depth < 3 and self._relieve(spots, heights, rect, cols):
+            return self.layout(evict=False, _depth=_depth + 1)
         for card in self.cards:
+            c = spots[card][0]
             card.grow_down = side != "above"
+            free = self.host.height() - 16 - (rect.top() + heights[c] - GAP) if side != "above" \
+                else rect.bottom() - heights[c] + GAP - 16
+            closed = card.view.closed_height() if card.view is not None else card.height()
+            card.room_cap = free + max(0, card.layout_height() - closed)
         for card in self.cards:
             c, offset = spots[card]
             x = rect.left() + c * (colw + GAP)

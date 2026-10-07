@@ -111,18 +111,18 @@ class FactsView(CardView):
         return WORD_SPRING.valueForProgress(max(0.0, min(1.0, raw)))
 
     def final_height(self):
-        self.final = True
+        self.final = self.probing = True
         try:
             return self.w._layout(None)
         finally:
-            self.final = False
+            self.final = self.probing = False
 
     def closed_height(self):
-        self.closed = True
+        self.closed = self.probing = True
         try:
             return self.w._layout(None)
         finally:
-            self.closed = False
+            self.closed = self.probing = False
 
     MIN_ROOM = 150
 
@@ -157,10 +157,10 @@ class FactsView(CardView):
         self.overflow = max(0.0, content + T.SECTION - full) if full else 0.0
         self.scroll = min(self.scroll, self.overflow)
         self.pane.set(full)
+        used = full if self.final else max(0.0, self.pane.value)
+        self.register_links(detail, y, used, targets)
         if self.final:
             return y + full
-        used = max(0.0, self.pane.value)
-        self.register_links(detail, y, used, targets)
         self.ratio = used / max(full if full else self.content_height(detail) + T.SECTION, 1.0)
         if self.pane.active:
             self.settling = True

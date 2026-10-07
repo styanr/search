@@ -200,6 +200,7 @@ class CardView:
         return False
 
     settling = False
+    probing = False
 
     def animating(self):
         return False
@@ -554,9 +555,12 @@ class CardWidget(QWidget):
         self._dragging = False
         self.WIDTH = width
         self.pane_alpha = 1.0
+        self.reserved = 0
         self.open_section = None
+        self.opened_at = 0.0
         self.details = {}
         self.grow_down = True
+        self.room_cap = 10 ** 6
         self.detailReady.connect(self._detail_ready)
         self.slot = ""
         self.card = None
@@ -586,12 +590,13 @@ class CardWidget(QWidget):
     def sizeHint(self):
         return QSize(self.WIDTH, self.height())
 
-    def set_loading(self, label="Looking it up…"):
+    def set_loading(self, label="Looking it up…", height=124):
         self.card, self.view, self.loading = None, None, True
         self.loading_label = label
         self._t0 = time.monotonic()
         if self.ambient:
             self._timer.start()
+        self.reserved = height
         self.resize(self.WIDTH, 124)
         self.update()
 
@@ -600,6 +605,7 @@ class CardWidget(QWidget):
         h0, loader_t = self.height(), time.monotonic() - self._t0
         self._cache_key = None
         self.open_section, self.details = None, {}
+        self.reserved = 0
         self.card, self.loading = card, False
         self.assets = assets
         cls = view_for(card)
@@ -625,13 +631,11 @@ class CardWidget(QWidget):
         return self.view is not None and self.view.animating()
 
     def room(self):
-        parent = self.parentWidget()
-        if parent is None:
-            return 10 ** 6
-        closed = self.view.closed_height() if self.view is not None else self.height()
-        return parent.height() - 16 - (self.y() + closed) if self.grow_down else self.y() + self.height() - 16 - closed
+        return self.room_cap
 
     def layout_height(self):
+        if self.loading:
+            return max(self.height(), self.reserved)
         if self._trans_t0 is not None:
             return self._h1
         return self.view.final_height() if self.growing() else self.height()
@@ -662,6 +666,7 @@ class CardWidget(QWidget):
             self.open_section = None
         else:
             self.open_section = i
+            self.opened_at = time.monotonic()
             if self.details.get(i) is False:
                 del self.details[i]
             self.prefetch(i)
@@ -681,7 +686,8 @@ class CardWidget(QWidget):
     def _layout(self, p):
         targets = {}
         h = self.view.layout(p, targets)
-        self._targets = targets
+        if not self.view.probing:
+            self._targets = targets
         return int(h)
 
     def _target_at(self, pos):
@@ -899,5 +905,9 @@ class CardWidget(QWidget):
     def _paint_loader_label(self, p, rect):
         f = type_font("body", 560)
         fm = QFontMetrics(f)
+        x = rect.right() + 18
+        lines = wrap(fm, self.loading_label, self.WIDTH - x - T.PAD, 2)
+        top = rect.center().y() - len(lines) * fm.lineSpacing() / 2
         p.setFont(f); p.setPen(self.palette_["on_surface"])
-        p.drawText(QPointF(rect.right() + 18, rect.center().y() + (fm.ascent() - fm.descent()) / 2), self.loading_label)
+        for i, line in enumerate(lines):
+            p.drawText(QPointF(x, top + fm.ascent() + i * fm.lineSpacing()), line)
