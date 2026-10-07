@@ -36,6 +36,7 @@ AURORA_HEIGHT = 200
 SHIMMER_SWEEP, SHIMMER_PERIOD = 1.1, 1.6
 WORD_REVEAL, WORD_CASCADE = 0.22, 0.28
 FRAME_SETTLE = 0.5
+LIFT_GROW, LIFT_MAX = 10, 0.04
 
 
 def copy_text(text):
@@ -689,9 +690,14 @@ class Overlay(QOpenGLWidget):
         band = SWEEP_EDGE * 1.6
         glow = self.aurora.get(now) * fade * min(1.0, intro * 1.6)
         wave = (1.0 - intro) ** 0.7 * fade if intro < 1.0 else 0.0
+        hole = lift = None
+        if self.selection is not None:
+            rect, radius = self._shape(now)
+            amount = self._lift(now)
+            lifted, lifted_radius, _ = self._lifted(rect, radius, amount)
+            hole, lift = (lifted, lifted_radius), (rect, amount)
         g.background(shade=(self.scrim_top, self.scrim_bottom, SCRIM_SELECTED * self.scrim_selected.get(now), fade),
-                     sweep=(front, SWEEP_EDGE),
-                     hole=self._shape(now) if self.selection is not None else None,
+                     sweep=(front, SWEEP_EDGE), hole=hole, lift=lift,
                      glow=(glow if glow > 0.01 else 0.0, t, self.height() - AURORA_HEIGHT, AURORA_HEIGHT),
                      wave=(wave, t + 3.0, front - band * 0.55, band))
         if self.selection is not None:
@@ -714,13 +720,27 @@ class Overlay(QOpenGLWidget):
     def _sweep_front(self, intro):
         return lerp(self.height() + 60, -SWEEP_EDGE - 60, intro)
 
+    def _lift(self, now):
+        if self.reading or self.frame_tween is None:
+            return 0.0
+        u = self.frame_tween.raw(now)
+        return OUT_CUBIC.valueForProgress(min(1.0, max(0.0, (u - 0.1) / 0.9)))
+
+    @staticmethod
+    def _lifted(rect, radius, amount):
+        s = 1.0 + amount * min(LIFT_MAX, LIFT_GROW / max(rect.width(), rect.height(), 1.0))
+        c = rect.center()
+        w, h = rect.width() * s, rect.height() * s
+        return QRectF(c.x() - w / 2, c.y() - h / 2, w, h), radius * s, s
+
     def _spin(self, now):
         return (now - self.t0) * 160 if self.ambient else 0.0
 
     def _paint_selection(self, g, now, t, fade):
-        rect, radius = self._shape(now)
+        source, radius = self._shape(now)
+        rect, radius, scale = self._lifted(source, radius, self._lift(now))
         if self.selected_words:
-            self._paint_words(g, now, rect, radius, fade)
+            self._paint_words(g, now, rect, radius, fade, source.center(), scale)
 
         if self.reading or self.frame_tween is None:
             if self.ambient:
@@ -749,7 +769,7 @@ class Overlay(QOpenGLWidget):
         s = lerp(max(r.width(), r.height()) / 2 + 8, s_end, k)
         g.frame(r, rad, s, lerp(3.5, pen, k), pen, white, fade, self._spin(now), rect.center())
 
-    def _paint_words(self, g, now, rect, radius, fade):
+    def _paint_words(self, g, now, rect, radius, fade, center, scale):
         key = (self.words_t0, len(self.selected_words), rect.getRect(), radius, fade)
         if self._word_batch is None or self._word_batch[0] != key or self._words_active(now):
             light, dark = [], []
@@ -760,6 +780,8 @@ class Overlay(QOpenGLWidget):
                 a = min(1.0, u * 2.5) * fade
                 r = to_qrect(w.rect).adjusted(-3, -2, 3, 2)
                 r.setWidth(r.width() * WORD_SPRING.valueForProgress(u))
+                r = QRectF(center.x() + (r.x() - center.x()) * scale, center.y() + (r.y() - center.y()) * scale,
+                           r.width() * scale, r.height() * scale)
                 if self._word_is_light(w):
                     light.append((r, mix(QColor("white"), HIGHLIGHT_LIGHT, a)))
                 else:

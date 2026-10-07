@@ -60,6 +60,8 @@ uniform vec4 shade;
 uniform vec2 sweep;
 uniform vec4 hole;
 uniform float hole_radius;
+uniform vec4 source;
+uniform float lift;
 uniform vec4 glow;
 uniform vec4 wave;
 uniform vec3 hues[4];
@@ -77,12 +79,20 @@ vec3 aurora(vec2 n, float t, float anchor, float seed) {
 }
 vec3 screen(vec3 a, vec3 b) { return a + b - a * b; }
 void main() {
-    vec3 c = texture2D(shot, p / view).rgb;
+    vec3 base = texture2D(shot, p / view).rgb;
     float reveal = clamp((p.y - sweep.x) / sweep.y + 1.0, 0.0, 1.0);
     reveal = reveal * reveal * (3.0 - 2.0 * reveal);
     float a = (mix(shade.x, shade.y, p.y / view.y) + shade.z) * reveal * shade.w;
-    if (hole.z > 0.0) a *= 1.0 - cover(rbox(p, hole, hole_radius));
-    c = mix(c, scrim, a);
+    vec3 c = mix(base, scrim, a);
+    if (hole.z > 0.0) {
+        vec3 inner = base;
+        if (lift > 0.0) {
+            float d = rbox(p - vec2(0.0, 6.0), hole, hole_radius);
+            c = mix(c, vec3(0.0), lift * 0.38 * shade.w * (1.0 - smoothstep(-18.0, 18.0, d)));
+            inner = texture2D(shot, (source.xy + (p - hole.xy) * source.zw / hole.zw) / view).rgb;
+        }
+        c = mix(c, inner, cover(rbox(p, hole, hole_radius)));
+    }
     if (glow.x > 0.004 && p.y >= glow.z) {
         vec2 n = vec2(p.x / view.x, (p.y - glow.z) / glow.w);
         c = screen(c, min(aurora(n, glow.y, 1.15, 0.0) * glow.x, 1.0));
@@ -345,7 +355,7 @@ class Renderer:
     def _full(self):
         return QRectF(0, 0, *self.view)
 
-    def background(self, shade, sweep, hole, glow, wave):
+    def background(self, shade, sweep, hole, glow, wave, lift=None):
         program = self._use("background", (ONE, ZERO))
         self.gl.glBindTexture(TEXTURE_2D, self.shot.id)
         program.setUniformValue("shot", 0)
@@ -355,6 +365,9 @@ class Renderer:
         rect, radius = hole if hole is not None else (QRectF(), 0.0)
         program.setUniformValue("hole", rect.x(), rect.y(), rect.width(), rect.height())
         program.setUniformValue("hole_radius", float(radius))
+        source, amount = lift if lift is not None else (QRectF(), 0.0)
+        program.setUniformValue("source", source.x(), source.y(), source.width(), source.height())
+        program.setUniformValue("lift", float(amount))
         program.setUniformValue("glow", *map(float, glow))
         program.setUniformValue("wave", *map(float, wave))
         self._hues(program)
