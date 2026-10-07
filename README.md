@@ -36,6 +36,20 @@ It is made for KDE Plasma 6 on Wayland. GNOME on Wayland is supported through th
 | A Nova Poshta or Ukrposhta tracking number | Tracking link |
 | A sentence in another language | Translation |
 | A short calculation | The result |
+| A QR code or barcode | Wi-Fi network (connect with NetworkManager), 2FA code, payment, contact, link, book or product |
+| An event, like "Sync with Anna Thursday 15:00 Zoom" | Google Calendar link and an .ics file |
+| An IBAN | Check digits, country and bank |
+| A table | Copy for a spreadsheet, as Markdown or as CSV |
+| Code | The code with its indentation |
+| An error message or code | HTTP status, errno, signal, exit code, SQLSTATE, HRESULT or exception, explained |
+| A Unix time, .NET ticks or ISO 8601 date | Local time, UTC and relative time |
+| A JWT | Header, claims and expiry. The token is decoded on your computer and not sent anywhere. |
+| A UUID | Version, and the time for v1, v6 and v7 |
+| A cron expression | Plain English and the next five runs |
+| Base64, hex, URL encoding or JSON | Decoded or formatted |
+| An area with no text | Its colours |
+
+Copying from a card keeps the overlay open. Shades, matching colours and palette swatches show their value when you hover them. Long lists, code and tables scroll.
 
 Names in other scripts (for example "Львів" or "東京") are found on the Wikipedia of their own language and shown with the English article.
 
@@ -47,13 +61,14 @@ Names in other scripts (for example "Львів" or "東京") are found on the W
 - Tesseract OCR with the English language pack, and packs for other languages you want to read
 - Hunspell English dictionary (used to tell words from names)
 - `wl-clipboard` (for copying on Wayland)
+- `zbar` (`zbarimg`) for QR codes and barcodes. `zxing-cpp` with Pillow also works.
 - On KDE: `gcc` and GLib development files (to build the screenshot helper)
 - On GNOME: `xdg-desktop-portal` and `xdg-desktop-portal-gnome`. These are installed with GNOME.
 
 On Fedora:
 
 ```
-sudo dnf install python3-pyqt6 tesseract tesseract-langpack-eng hunspell-en-US wl-clipboard gcc glib2-devel
+sudo dnf install python3-pyqt6 tesseract tesseract-langpack-eng hunspell-en-US wl-clipboard zbar gcc glib2-devel
 ```
 
 Other OCR languages use the package name `tesseract-langpack-<code>`, for example `tesseract-langpack-ukr` or `tesseract-langpack-deu`.
@@ -61,7 +76,7 @@ Other OCR languages use the package name `tesseract-langpack-<code>`, for exampl
 On Ubuntu and Debian:
 
 ```
-sudo apt install python3-pyqt6 tesseract-ocr tesseract-ocr-eng hunspell-en-us wl-clipboard
+sudo apt install python3-pyqt6 tesseract-ocr tesseract-ocr-eng hunspell-en-us wl-clipboard zbar-tools
 ```
 
 Other OCR languages use the package name `tesseract-ocr-<code>`, for example `tesseract-ocr-ukr`.
@@ -150,8 +165,13 @@ The portal saves the screenshot as a file. The app reads the file and deletes it
 | Enter | Run the suggested search (text or image) |
 | Ctrl+Enter | Search the selected area with Google Lens |
 | Ctrl+C | Copy the text |
+| Ctrl+P | Pin the selected area to the screen |
+| Type | Search for what you type |
+| Down | Recent selections and searches |
 | Right-click | Clear the selection |
 | Esc | Close |
+
+The pin button on a card keeps that card on the screen after the overlay closes. Drag a pin to move it, scroll on an area pin to zoom, and double-click or press Esc to close it. On KDE the pins stay above other windows.
 
 Run with `--instant` to search as soon as you finish circling.
 
@@ -174,6 +194,7 @@ CIRCLE_SEARCH_OCR_LANGUAGES=jpn+ell
 | `CIRCLE_SEARCH_CARDS` | `1` | Set to `0` to turn off cards. |
 | `CIRCLE_SEARCH_DEBUG` | `0` | Set to `1` to save each screenshot and OCR result to `~/.cache/circle-search/debug/`. |
 | `CIRCLE_SEARCH_ROUTER` | `local` | Which router decides the kind of selection. Only `local` is built in. |
+| `CIRCLE_SEARCH_HISTORY` | `1` | Set to `0` to stop saving recent selections and searches to `~/.local/share/circle-search/history.jsonl`. |
 
 The app reads your language, currency and units from the KDE regional settings (`LC_ADDRESS`, `LC_MONETARY`, `LC_MEASUREMENT`). The card text is in English.
 
@@ -208,10 +229,13 @@ OCR runs on your computer. Cards and searches use these online services. The sel
 | `core/pipeline.py` | Turns a selection into cards (resolvers and enrichers) |
 | `core/cards.py` | The base card types |
 | `core/ocr.py`, `core/textindex.py` | OCR engines and the words found on the screen |
+| `core/barcode.py` | QR code and barcode engines |
+| `core/layout.py` | Tables and code rebuilt from the positions of the words |
+| `core/history.py` | Recent selections and searches |
 | `core/locale.py` | Your language, currency and units, and how to format them |
 | `core/actions.py` | Search, Lens, open and copy |
 | `circlesearch/plugins/` | One folder for each feature: weather, money, places and so on |
-| `circlesearch/ui/` | The Qt app: overlay, search bar, card board, card widgets, screenshots |
+| `circlesearch/ui/` | The Qt app: overlay, search bar, card board, card widgets, pins, screenshots |
 | `circlesearch/cli.py` | Looks up text from the terminal: `python3 -m circlesearch.cli Kyoto` |
 | `kwin-grab.c` | Takes a screenshot through KWin's D-Bus interface |
 | `io.github.styanr.search.desktop` | Desktop file. Needed on GNOME for the screenshot permission |
@@ -222,13 +246,14 @@ Each folder in `circlesearch/plugins/` is a plugin. The app loads all of them at
 
 | Part | Decorator | What it does |
 |---|---|---|
-| Recognizer | `@recognizer(kind, order=…)` in `core.routing` | Finds a value in the text, for example a colour or a date |
+| Recognizer | `@recognizer(kind, order=…)` in `core.routing` | Finds a value in the text, for example a colour or a date. Pass `raw=True` to get the text before it is cleaned. |
+| Layout recognizer | `@layout(kind, order=…)` in `core.layout` | Finds a value in the positions of the words, for example a table |
 | Resolver | `@resolver(kind, …)` in `core.pipeline` | Makes the main card for a kind of selection |
 | Enricher | `@enricher(name, needs={…})` in `core.pipeline` | Makes extra cards from facts that other cards found, for example weather from `lat` and `lon` |
 | Card type | a `@dataclass` that extends `Card`, `TextCard` or `HeroCard` | The data that a card shows |
 | View | `@view(CardClass)` in `ui.cards`, in the plugin's `view.py` | How the card looks. Without a view, the card uses the generic text view. |
 
-`__init__.py` must not import Qt. Put Qt code in `view.py`. A view's `prepare(card)` runs off the main thread, so decode images there.
+`__init__.py` must not import Qt. Put Qt code in `view.py`. A view's `prepare(card)` runs off the main thread, so decode images there. A view can also handle `wheel`, `press`, `drag` and `release`, and animate in `step(dt)`.
 
 To match the other cards, build views from the parts in `ui/cards.py` (`header`, `chip_row`, `paragraph`, `big_value`, `rows`, `button_group`, `copyable`, `footer`) and the sizes and colours in `ui/tokens.py`. A card's `accent` picks its colour family: `blue` for knowledge and places, `green` for money, `red` for dates and time, `amber` for software, and `neutral` for tools and data.
 
@@ -267,7 +292,7 @@ Screenshot backends (`ui/capture.py`), OCR engines (`core/ocr.py`) and routers (
 ## Limitations
 
 - Fast screenshots work only on KDE Plasma (KWin). On GNOME and other desktops the app uses the screenshot portal.
-- Only the primary screen is used.
+- Pins stay above other windows on KDE only. On GNOME they are normal windows.
 - OCR can misread small text or text in fonts with unusual shapes. Check the text in the search bar if a card does not appear.
 - A name that is also a common word (for example "React") may show the dictionary meaning instead of the article.
 - The Google Translate and Google Lens endpoints are not official APIs and can change.

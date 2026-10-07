@@ -72,10 +72,10 @@ def nearby(facts):
         places.append((distance_km(facts["lat"], facts["lon"], c["lat"], c["lon"]), p["title"], desc,
                        p["thumbnail"]["source"]))
     places.sort()
-    places = places[:5]
+    places = places[:9]
     if len(places) < 2:
         return [], {}
-    with ThreadPoolExecutor(5) as pool:
+    with ThreadPoolExecutor(6) as pool:
         images = list(pool.map(lambda pl: safe(get_bytes, pl[3]), places))
     found = [Place(title, show_distance(dist), desc, img,
                    "https://en.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_")))

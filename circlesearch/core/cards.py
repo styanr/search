@@ -6,7 +6,8 @@ from typing import ClassVar
 class Action:
     label: str
     kind: str
-    payload: str
+    payload: object
+    filename: str = ""
 
 
 @dataclass(kw_only=True)

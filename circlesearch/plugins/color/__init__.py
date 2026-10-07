@@ -3,7 +3,7 @@ import math
 import re
 from dataclasses import dataclass, field
 
-from circlesearch.core.cards import Card
+from circlesearch.core.cards import Action, Card
 from circlesearch.core.pipeline import resolver
 from circlesearch.core.routing import recognizer
 from circlesearch.core.text import fmt
@@ -75,9 +75,7 @@ def oklch(r, g, b):
     return L, C, H
 
 
-@resolver("color")
-def color_card(route):
-    r, g, b, a = route.value
+def describe(r, g, b, a=1.0):
     hex_ = f"#{r:02X}{g:02X}{b:02X}" + (f"{round(a * 255):02X}" if a < 1 else "")
     hue, light, sat = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
     L, C, H = oklch(r, g, b)
@@ -90,4 +88,27 @@ def color_card(route):
                ("RGB", f"rgb({r} {g} {b}{alpha})"),
                ("HSL", f"hsl({round(hue * 360) % 360} {round(sat * 100)}% {round(light * 100)}%{alpha})"),
                ("OKLCH", f"oklch({L * 100:.1f}% {C:.3f} {H:.1f}{alpha})")]
-    return ColorCard(title=hex_, swatch=hex_, formats=formats, contrast=f"{better[1]:.1f}:1 on {better[0]} ({grade})")
+    return hex_, formats, f"{better[1]:.1f}:1 on {better[0]} ({grade})"
+
+
+@resolver("color")
+def color_card(route):
+    hex_, formats, contrast = describe(*route.value)
+    return ColorCard(title=hex_, swatch=hex_, formats=formats, contrast=contrast)
+
+
+@dataclass(kw_only=True)
+class PaletteCard(Card):
+    kind = "palette"
+    priority = 2
+
+    colors: list[str] = field(default_factory=list)
+
+
+@resolver("palette")
+def palette_card(route):
+    colors = route.value
+    if not colors:
+        return None
+    return PaletteCard(title=f"{len(colors)} colours", colors=colors,
+                       actions=[Action("Copy all", "copy", " ".join(colors))])

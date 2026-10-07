@@ -204,4 +204,63 @@ def glyph(p, name, rect, color):
     elif name == "clock":
         p.drawEllipse(QRectF(x + w * .1, y + h * .1, w * .8, h * .8))
         p.drawPolyline([QPointF(x + w * .5, y + h * .28), QPointF(x + w * .5, y + h * .5), QPointF(x + w * .66, y + h * .6)])
+    elif name == "pin":
+        head = QPainterPath(QPointF(x + w * .34, y + h * .12))
+        head.lineTo(QPointF(x + w * .66, y + h * .12)); head.lineTo(QPointF(x + w * .60, y + h * .42))
+        head.lineTo(QPointF(x + w * .76, y + h * .58)); head.lineTo(QPointF(x + w * .24, y + h * .58))
+        head.lineTo(QPointF(x + w * .40, y + h * .42)); head.closeSubpath()
+        p.drawPath(head)
+        p.drawLine(QPointF(x + w * .5, y + h * .58), QPointF(x + w * .5, y + h * .92))
+    elif name == "close":
+        p.drawLine(QPointF(x + w * .26, y + h * .26), QPointF(x + w * .74, y + h * .74))
+        p.drawLine(QPointF(x + w * .74, y + h * .26), QPointF(x + w * .26, y + h * .74))
+    elif name == "wifi":
+        for k, r in enumerate((.42, .28, .14)):
+            p.drawArc(QRectF(x + w * (.5 - r), y + h * (.78 - r), w * 2 * r, h * 2 * r), 45 * 16, 90 * 16)
+        p.setBrush(color); p.drawEllipse(QPointF(x + w * .5, y + h * .78), w * .05, w * .05)
+    elif name == "key":
+        p.drawEllipse(QPointF(x + w * .32, y + h * .5), w * .17, w * .17)
+        p.drawLine(QPointF(x + w * .49, y + h * .5), QPointF(x + w * .9, y + h * .5))
+        p.drawLine(QPointF(x + w * .78, y + h * .5), QPointF(x + w * .78, y + h * .66))
+        p.drawLine(QPointF(x + w * .66, y + h * .5), QPointF(x + w * .66, y + h * .62))
+    elif name == "history":
+        p.drawArc(QRectF(x + w * .12, y + h * .12, w * .76, h * .76), 120 * 16, 300 * 16)
+        p.drawPolyline([QPointF(x + w * .08, y + h * .26), QPointF(x + w * .18, y + h * .36), QPointF(x + w * .30, y + h * .26)])
+        p.drawPolyline([QPointF(x + w * .5, y + h * .32), QPointF(x + w * .5, y + h * .52), QPointF(x + w * .64, y + h * .6)])
+    elif name == "table":
+        p.drawRoundedRect(QRectF(x + w * .12, y + h * .18, w * .76, h * .64), 3, 3)
+        p.drawLine(QPointF(x + w * .12, y + h * .4), QPointF(x + w * .88, y + h * .4))
+        p.drawLine(QPointF(x + w * .12, y + h * .61), QPointF(x + w * .88, y + h * .61))
+        p.drawLine(QPointF(x + w * .42, y + h * .18), QPointF(x + w * .42, y + h * .82))
+    elif name == "qr":
+        for cx, cy in ((.14, .14), (.58, .14), (.14, .58)):
+            p.drawRoundedRect(QRectF(x + w * cx, y + h * cy, w * .28, h * .28), 2, 2)
+        p.setBrush(color)
+        for cx, cy in ((.62, .62), (.78, .62), (.62, .78), (.78, .78)):
+            p.drawRect(QRectF(x + w * cx, y + h * cy, w * .08, h * .08))
+    elif name == "bank":
+        p.drawPolyline([QPointF(x + w * .1, y + h * .36), QPointF(x + w * .5, y + h * .12), QPointF(x + w * .9, y + h * .36)])
+        p.drawLine(QPointF(x + w * .1, y + h * .36), QPointF(x + w * .9, y + h * .36))
+        for cx in (.24, .5, .76):
+            p.drawLine(QPointF(x + w * cx, y + h * .46), QPointF(x + w * cx, y + h * .74))
+        p.drawLine(QPointF(x + w * .08, y + h * .86), QPointF(x + w * .92, y + h * .86))
+    elif name == "place":
+        path = QPainterPath(QPointF(x + w * .5, y + h * .92))
+        path.cubicTo(QPointF(x + w * .1, y + h * .5), QPointF(x + w * .18, y + h * .08), QPointF(x + w * .5, y + h * .08))
+        path.cubicTo(QPointF(x + w * .82, y + h * .08), QPointF(x + w * .9, y + h * .5), QPointF(x + w * .5, y + h * .92))
+        p.drawPath(path)
+        p.drawEllipse(QPointF(x + w * .5, y + h * .38), w * .11, w * .11)
+    elif name == "shield":
+        path = QPainterPath(QPointF(x + w * .5, y + h * .08))
+        path.lineTo(QPointF(x + w * .84, y + h * .2)); path.lineTo(QPointF(x + w * .84, y + h * .48))
+        path.cubicTo(QPointF(x + w * .84, y + h * .72), QPointF(x + w * .66, y + h * .86), QPointF(x + w * .5, y + h * .94))
+        path.cubicTo(QPointF(x + w * .34, y + h * .86), QPointF(x + w * .16, y + h * .72), QPointF(x + w * .16, y + h * .48))
+        path.lineTo(QPointF(x + w * .16, y + h * .2)); path.closeSubpath()
+        p.drawPath(path)
+    elif name == "eye":
+        path = QPainterPath(QPointF(x + w * .06, y + h * .5))
+        path.quadTo(QPointF(x + w * .5, y + h * .06), QPointF(x + w * .94, y + h * .5))
+        path.quadTo(QPointF(x + w * .5, y + h * .94), QPointF(x + w * .06, y + h * .5))
+        p.drawPath(path)
+        p.drawEllipse(QPointF(x + w * .5, y + h * .5), w * .13, w * .13)
     p.restore()

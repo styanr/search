@@ -68,6 +68,30 @@ def search_image(png_bytes):
     open_url(pathlib.Path(path).as_uri())
 
 
+def save_file(name, content):
+    folder = os.path.join(CACHE_DIR, "files")
+    os.makedirs(folder, exist_ok=True)
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in name).strip("-.") or "file"
+    path = os.path.join(folder, safe_name)
+    with open(path, "w" if isinstance(content, str) else "wb") as f:
+        f.write(content)
+    return path
+
+
+def run_command(command, stdin=None):
+    if not command or shutil.which(command[0]) is None:
+        return False
+    try:
+        proc = subprocess.Popen(command, start_new_session=True, stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if stdin:
+            proc.stdin.write(stdin.encode())
+            proc.stdin.close()
+    except OSError:
+        return False
+    return True
+
+
 def copy_text(text):
     if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
         subprocess.run(["wl-copy"], input=text.encode(), check=False)
