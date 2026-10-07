@@ -2,7 +2,7 @@ import time
 
 from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPalette, QPen
-from PyQt6.QtWidgets import QAbstractButton, QHBoxLayout, QLineEdit, QWidget
+from PyQt6.QtWidgets import QAbstractButton, QGraphicsOpacityEffect, QHBoxLayout, QLineEdit, QWidget
 
 from circlesearch.core import history
 from circlesearch.ui.effects import draw_check, draw_glyph, draw_loader
@@ -11,6 +11,8 @@ from circlesearch.ui.motion import MOTION, Spring, Tween, frame_timer, lerp, mix
 from circlesearch.ui.shapes import glyph
 from circlesearch.ui.theme import ON_PRIMARY, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SURFACE, SURFACE_HIGH, font
 
+
+FADE = 28
 
 class PillButton(QAbstractButton):
     CHECK = 22
@@ -312,7 +314,10 @@ class SearchBar(QWidget):
         self.resize(820, self.HEIGHT)
         self.prefer_text = False
 
-        self.edge_fade = EdgeFade(self)
+        self.pane_alpha = 1.0
+        self.fade = QGraphicsOpacityEffect(self.edit)
+        self.fade.setEnabled(False)
+        self.edit.setGraphicsEffect(self.fade)
         self.edit.textChanged.connect(self._update_fade)
         self.edit.cursorPositionChanged.connect(self._update_fade)
 
@@ -323,17 +328,20 @@ class SearchBar(QWidget):
     def _update_fade(self, *_):
         self.layout().activate()
         g = self.edit.geometry()
-        self.edge_fade.setGeometry(g.right() - EdgeFade.WIDTH + 1, g.top(), EdgeFade.WIDTH, g.height())
         text = self.edit.text()
         overflows = QFontMetrics(self.edit.font()).horizontalAdvance(text) > g.width() - 6
-        self.edge_fade.setVisible(overflows and self.edit.cursorPosition() < len(text))
-        self.edge_fade.raise_()
+        w = max(1, g.width())
+        mask = QLinearGradient(0, 0, w, 0)
+        mask.setColorAt(max(0.0, 1 - FADE / w), QColor(0, 0, 0, 255))
+        mask.setColorAt(max(0.0, 1 - 4 / w), QColor(0, 0, 0, 0))
+        self.fade.setOpacityMask(QBrush(mask))
+        self.fade.setEnabled(overflows and self.edit.cursorPosition() < len(text))
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setBrush(SURFACE)
+        p.setBrush(with_alpha(SURFACE, self.pane_alpha))
         p.setPen(QPen(QColor(255, 255, 255, 18), 1))
         p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
         draw_glyph(p, QPointF(31, r.center().y()), radius=9, width=3)
@@ -401,7 +409,7 @@ class SearchBar(QWidget):
         self.image_btn.setEnabled(True)
         self.pin_btn.setEnabled(True)
         self.text_btn.set_primary(self.prefer_text)
-        self.image_btn.set_primary(not self.prefer_text)
+        self.image_btn.set_primary(not self.prefer_text and not reading)
 
     def set_typing(self):
         self.set_selection("", True)
@@ -417,20 +425,3 @@ class SearchBar(QWidget):
             self.textSearch.emit(self.edit.text())
         else:
             self.imageSearch.emit()
-
-
-class EdgeFade(QWidget):
-    WIDTH = 28
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.hide()
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        g = QLinearGradient(0, 0, self.width(), 0)
-        g.setColorAt(0.0, with_alpha(SURFACE, 0.0))
-        g.setColorAt(0.85, SURFACE)
-        p.fillRect(self.rect(), QBrush(g))
-

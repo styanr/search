@@ -8,7 +8,7 @@ from PyQt6.QtOpenGL import (QOpenGLBuffer, QOpenGLFramebufferObject, QOpenGLShad
 
 from circlesearch.core import settings
 from circlesearch.ui.effects import InkStroke, gaussian
-from circlesearch.ui.theme import GOOGLE, SCRIM
+from circlesearch.ui.theme import GOOGLE, SCRIM, SURFACE
 
 TEXTURE_2D, MIN_FILTER, MAG_FILTER, LINEAR = 0x0DE1, 0x2801, 0x2800, 0x2601
 BLEND, SCISSOR_TEST, DEPTH_TEST = 0x0BE2, 0x0C11, 0x0B71
@@ -17,6 +17,8 @@ TRIANGLES, FLOAT, COLOR_BUFFER_BIT, DEPTH_BUFFER_BIT, RENDERER = 0x0004, 0x1406,
 LESS, LEQUAL = 0x0201, 0x0203
 FUNC_ADD, MAX = 0x8006, 0x8008
 TEXTURE0, TEXTURE1 = 0x84C0, 0x84C1
+FROST_UNITS = (0x84C2, 0x84C3, 0x84C4)
+PANES = 12
 
 OVER, SCREEN, MULTIPLY = (ONE, ONE_MINUS_SRC_ALPHA), (ONE_MINUS_DST_COLOR, ONE), (DST_COLOR, ZERO)
 SHIMMER, BORDER, FRAME, TIP = 1, 2, 3, 5
@@ -71,6 +73,14 @@ uniform vec3 pen;
 uniform vec3 activity;
 uniform sampler2D halo;
 uniform float light;
+uniform sampler2D frost_half;
+uniform sampler2D frost_quarter;
+uniform sampler2D frost;
+uniform vec4 panes[12];
+uniform vec3 pane_info[12];
+uniform int pane_count;
+uniform float frosted;
+uniform vec3 surface;
 uniform vec3 hues[4];
 float hash(vec2 q) { return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
 float noise(vec2 q) {
@@ -106,6 +116,26 @@ vec3 aurora(vec2 n, float t, float anchor, float seed, float lobe) {
 vec3 screen(vec3 a, vec3 b) { return a + b - a * b; }
 void main() {
     vec3 base = texture2D(shot, p / view).rgb;
+    float pane = 0.0;
+    float inside = 0.0;
+    float shadow = 0.0;
+    for (int i = 0; i < 12; i++) {
+        if (i >= pane_count) break;
+        vec4 r = panes[i];
+        float k = cover(rbox(p, r, pane_info[i].x));
+        inside = max(inside, k);
+        pane = max(pane, k * pane_info[i].y * frosted);
+        float d = rbox(p - vec2(0.0, 14.0), vec4(r.x + 8.0, r.y, r.z - 16.0, r.w), pane_info[i].x);
+        shadow = 1.0 - (1.0 - shadow) * (1.0 - pane_info[i].z * (1.0 - smoothstep(-20.0, 20.0, d)));
+    }
+    if (pane > 0.0) {
+        vec2 fuv = vec2(p.x / view.x, 1.0 - p.y / view.y);
+        float lv = pane * 3.0;
+        vec3 f1 = texture2D(frost_half, fuv).rgb;
+        vec3 f2 = texture2D(frost_quarter, fuv).rgb;
+        vec3 f3 = texture2D(frost, fuv).rgb;
+        base = lv < 1.0 ? mix(base, f1, lv) : (lv < 2.0 ? mix(f1, f2, lv - 1.0) : mix(f2, f3, lv - 2.0));
+    }
     float reveal = clamp((p.y - sweep.x) / sweep.y + 1.0, 0.0, 1.0);
     reveal = reveal * reveal * (3.0 - 2.0 * reveal);
     float a = (mix(shade.x, shade.y, p.y / view.y) + shade.z) * reveal * shade.w;
@@ -138,6 +168,8 @@ void main() {
         float feather = clamp(min(n.y, 1.0 - n.y) / 0.3, 0.0, 1.0);
         c = screen(c, min(aurora(n, wave.y, 0.5, 2.0, 0.0) * wave.x, 1.0) * feather);
     }
+    c = mix(c, mix(surface, c, 0.25), pane);
+    c *= 1.0 - 0.55 * shadow * (1.0 - inside);
     gl_FragColor = vec4(c, 1.0);
 }
 """
@@ -395,6 +427,7 @@ class Renderer:
         self._layers = None
         self._strokes = {}
         self._light_owner = None
+        self._frost = None
         reach, weights = gaussian(InkStroke.GLOW_SIGMA)
         self._weights = weights[reach:reach + 10]
         self._used = set()
@@ -456,7 +489,9 @@ class Renderer:
     def _full(self):
         return QRectF(0, 0, *self.view)
 
-    def background(self, shade, sweep, hole, glow, wave, lift=None, pen=None, activity=(0.0, 0.0, 0.0), light=None):
+    def background(self, shade, sweep, hole, glow, wave, lift=None, pen=None, activity=(0.0, 0.0, 0.0), light=None,
+                   panes=(), frosted=False):
+        frost = self._frost_texture() if panes and frosted else None
         program = self._use("background", (ONE, ZERO))
         self.gl.glBindTexture(TEXTURE_2D, self.shot.id)
         program.setUniformValue("shot", 0)
@@ -484,6 +519,18 @@ class Renderer:
             strength = 0.0
         program.setUniformValue("halo", 1)
         program.setUniformValue("light", float(strength))
+        panes = panes[:PANES]
+        for i, (rect, radius, frost_amount, shadow) in enumerate(panes):
+            program.setUniformValue(f"panes[{i}]", rect.x(), rect.y(), rect.width(), rect.height())
+            program.setUniformValue(f"pane_info[{i}]", float(radius), float(frost_amount), float(shadow))
+        program.setUniformValue("pane_count", len(panes))
+        program.setUniformValue("frosted", 1.0 if frost is not None else 0.0)
+        program.setUniformValue("surface", *rgb(SURFACE))
+        for unit, name, layer in zip(FROST_UNITS, ("frost_half", "frost_quarter", "frost"), frost or ()):
+            self.gl.glActiveTexture(unit)
+            self.gl.glBindTexture(TEXTURE_2D, layer.id)
+            program.setUniformValue(name, unit - TEXTURE0)
+        self.gl.glActiveTexture(TEXTURE0)
         self._hues(program)
         self._draw(program, array("f", self._quad(self._full())), (("pos", 2), ("uv", 2)))
 
@@ -591,6 +638,41 @@ class Renderer:
         gl.glClear(COLOR_BUFFER_BIT | (DEPTH_BUFFER_BIT if depth else 0))
         self._scissor(layer, area, scale)
 
+    def _blur(self, layer, temp, region, scale):
+        for source, target, step in ((layer, temp, (1.0 / layer.size.width(), 0.0)),
+                                     (temp, layer, (0.0, 1.0 / layer.size.height()))):
+            self._into(target, region, self.dpr * scale, 24.0 / scale)
+            program = self._use("blur", (ONE, ZERO))
+            self.gl.glBindTexture(TEXTURE_2D, source.id)
+            program.setUniformValue("image", 0)
+            program.setUniformValue("step", *step)
+            for i, weight in enumerate(self._weights):
+                program.setUniformValue(f"weights[{i}]", float(weight))
+            self._draw(program, array("f", self._quad(region, self._flipped(region))), (("pos", 2), ("uv", 2)))
+
+    def frost(self):
+        self._frost_texture()
+
+    def _frost_texture(self):
+        if self._frost is None:
+            full, whole = self.device, self._full()
+            levels = []
+            source, uv = self.shot.id, None
+            for d, passes in ((2, 1), (4, 1), (8, 2)):
+                size = QSize((full.width() + d - 1) // d, (full.height() + d - 1) // d)
+                layer, temp = Layer(self.gl, size), Layer(self.gl, size)
+                self._into(layer, whole, self.dpr / d)
+                self._textured(source, whole, 1.0, (ONE, ZERO), uv)
+                for _ in range(passes):
+                    self._blur(layer, temp, whole, 1 / d)
+                levels.append(layer)
+                source, uv = layer.id, self._flipped(whole)
+            self.gl.glDisable(SCISSOR_TEST)
+            rebind()
+            self.gl.glViewport(0, 0, self.device.width(), self.device.height())
+            self._frost = tuple(levels)
+        return self._frost
+
     def _flipped(self, area):
         w, h = self.view
         return area.left() / w, 1 - area.top() / h, area.right() / w, 1 - area.bottom() / h
@@ -690,16 +772,7 @@ class Renderer:
             gl.glBlendEquation(FUNC_ADD)
         uv = self._flipped(area)
         for layer, temp, scale, region in blurs:
-            for source, target, step in ((layer, temp, (1.0 / layer.size.width(), 0.0)),
-                                         (temp, layer, (0.0, 1.0 / layer.size.height()))):
-                self._into(target, region, self.dpr * scale, 24.0 / scale)
-                program = self._use("blur", (ONE, ZERO))
-                gl.glBindTexture(TEXTURE_2D, source.id)
-                program.setUniformValue("image", 0)
-                program.setUniformValue("step", *step)
-                for i, weight in enumerate(self._weights):
-                    program.setUniformValue(f"weights[{i}]", float(weight))
-                self._draw(program, array("f", self._quad(region, self._flipped(region))), (("pos", 2), ("uv", 2)))
+            self._blur(layer, temp, region, scale)
         gl.glDisable(SCISSOR_TEST)
         rebind()
         gl.glViewport(0, 0, self.device.width(), self.device.height())

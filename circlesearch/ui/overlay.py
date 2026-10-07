@@ -7,7 +7,8 @@ import threading
 import time
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QShortcut
+from PyQt6.QtGui import (QColor, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPen,
+                         QShortcut)
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 from circlesearch.core import actions, history, settings
@@ -38,6 +39,7 @@ WORD_REVEAL, WORD_CASCADE = 0.22, 0.28
 FRAME_SETTLE = 0.5
 LIFT_GROW, LIFT_MAX = 10, 0.04
 FLOW = 240
+FROST_ALPHA = 170 / 255
 PEN_SPEED = 1600
 INK_LIGHT = 0.45
 MORPH = 0.34
@@ -131,7 +133,8 @@ class Overlay(QWidget):
         self.bar_from = self.bar_to = None
         self.bar_tween = None
         self.ambient = AMBIENT
-        self._shadows = {}
+        self.pane_alpha = 1.0
+        self._frosted = False
         self.energy = 0.0
         self._travel = 0.0
         self._energy_at = time.monotonic()
@@ -860,45 +863,17 @@ class Overlay(QWidget):
 
     def backdrop_ready(self, gpu):
         self.ambient = AMBIENT and not gpu.lite
+        self.pane_alpha = 1.0 if gpu.lite else FROST_ALPHA
+        self.bar.pane_alpha = self.pane_alpha
 
     def paintEvent(self, e):
         now = time.monotonic()
         fade = 1.0 - (self.exit.value(now) if self.exit is not None else 0.0)
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        for widget, radius in ((self.bar, SearchBar.HEIGHT / 2), *((c, c.radius()) for c in self.board.cards)):
-            if widget is not None and widget.isVisible():
-                effect = widget.graphicsEffect()
-                self._paint_shadow(p, QRectF(widget.geometry()), effect.opacity() if effect is not None else 1.0, radius)
-        for image, geometry, opacity, radius in self._snaps:
-            self._paint_shadow(p, geometry, opacity * fade, radius)
+        for image, geometry, opacity, _ in self._snaps:
             p.setOpacity(opacity * fade)
             p.drawImage(geometry.topLeft(), image)
-            p.setOpacity(1.0)
-
-    def _paint_shadow(self, p, geometry, opacity, radius=None):
-        size = geometry.size().toSize()
-        radius = size.height() / 2 if radius is None else radius
-        key = (size.width(), size.height(), radius)
-        if key not in self._shadows:
-            pad, s = 48, 12
-            img = QImage((size.width() + 2 * pad) // s, (size.height() + 2 * pad) // s,
-                         QImage.Format.Format_ARGB32_Premultiplied)
-            img.fill(0)
-            sp = QPainter(img)
-            sp.setRenderHint(QPainter.RenderHint.Antialiasing)
-            sp.scale(1 / s, 1 / s)
-            sp.setPen(Qt.PenStyle.NoPen)
-            sp.setBrush(QColor(0, 0, 0, 170))
-            sp.drawRoundedRect(QRectF(pad + 8, pad + 14, size.width() - 16, size.height()), radius, radius)
-            sp.end()
-            if len(self._shadows) > 8:
-                self._shadows.clear()
-            self._shadows[key] = img
-        p.setOpacity(opacity)
-        p.drawImage(geometry.adjusted(-48, -48, 48, 48), self._shadows[key])
-        p.setOpacity(1.0)
 
     def paint_backdrop(self, g):
         now = time.monotonic()
@@ -906,6 +881,9 @@ class Overlay(QWidget):
         fade = 1.0 - (self.exit.value(now) if self.exit is not None else 0.0)
         intro = self.intro.value(now)
         g.begin(self.width(), self.height(), self.backdrop.devicePixelRatio())
+        if self.pane_alpha < 1.0 and not self._frosted and self.intro.done(now):
+            g.frost()
+            self._frosted = True
         front = self._sweep_front(intro)
         band = SWEEP_EDGE * 1.6
         glow = (self.aurora.get(now) + 0.15 * self.energy) * fade * min(1.0, intro * 1.6)
@@ -922,7 +900,8 @@ class Overlay(QWidget):
                      glow=(glow if glow > 0.01 else 0.0, self._phase, self.height() - AURORA_HEIGHT, AURORA_HEIGHT),
                      wave=(wave, t + 3.0, front - band * 0.55, band),
                      pen=(self._pen_x or 0.0, self.energy, self._near),
-                     activity=(self._busy, *self._bounce_at(now)), light=self._light(now))
+                     activity=(self._busy, *self._bounce_at(now)), light=self._light(now), panes=self._panes(fade),
+                     frosted=self.pane_alpha < 1.0)
         if self.selection is not None:
             self._paint_selection(g, now, t, fade)
         if self.morph is not None:
@@ -955,6 +934,16 @@ class Overlay(QWidget):
 
     def _appear(self, now):
         return 1.0 if self.morph is None or self.morph[3].done(now) else 0.0
+
+    def _panes(self, fade):
+        panes = []
+        for widget, radius in ((self.bar, SearchBar.HEIGHT / 2), *((c, c.radius()) for c in self.board.cards)):
+            if widget is not None and widget.isVisible():
+                effect = widget.graphicsEffect()
+                opacity = effect.opacity() if effect is not None else 1.0
+                panes.append((QRectF(widget.geometry()), radius, opacity, opacity))
+        panes += [(geometry, radius, opacity * fade, opacity * fade) for _, geometry, opacity, radius in self._snaps]
+        return panes
 
     def _light(self, now):
         if self.ink is not None:

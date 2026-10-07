@@ -83,6 +83,7 @@ class CardBoard:
         _, width = self.columns()
         card = CardWidget(self.host, PALETTE, ambient=AMBIENT, width=round(width), role=role,
                           pinnable=self.on_pin is not None)
+        card.pane_alpha = self.host.pane_alpha
         card.hide()
         card.copyRequested.connect(self.on_copy)
         card.openRequested.connect(self.on_open)

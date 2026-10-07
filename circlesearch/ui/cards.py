@@ -536,6 +536,7 @@ class CardWidget(QWidget):
         self._confirmed = {}
         self._dragging = False
         self.WIDTH = width
+        self.pane_alpha = 1.0
         self.card = None
         self.view = None
         self.loading = False
@@ -589,7 +590,7 @@ class CardWidget(QWidget):
             return
         self._h0, self._h1 = h0, self.height()
         self._loader_t = loader_t
-        self._final = self._render()
+        self._final = self._render(background=False)
         self._trans_t0 = time.monotonic()
         self.resize(self.WIDTH, h0)
         self._trans_timer.start()
@@ -715,11 +716,11 @@ class CardWidget(QWidget):
                 self.firing = None
         e.accept()
 
-    def _render(self):
+    def _render(self, background=True):
         pm = QPixmap(self.size() * self.devicePixelRatioF())
         pm.setDevicePixelRatio(self.devicePixelRatioF())
         pm.fill(Qt.GlobalColor.transparent)
-        self._paint_now(QPainter(pm))
+        self._paint_now(QPainter(pm), background)
         return pm
 
     def paintEvent(self, e):
@@ -766,7 +767,7 @@ class CardWidget(QWidget):
         k = ramp(raw, 0.0, 0.5)
         bg = QColor.fromRgbF(*(a + (b - a) * k for a, b in zip(surface.getRgbF()[:3], tint.getRgbF()[:3])))
         p.setPen(QPen(QColor(255, 255, 255, T.BORDER_ALPHA), 1))
-        p.setBrush(bg)
+        p.setBrush(with_alpha(bg, self.pane_alpha))
         p.drawPath(clip)
         p.save()
         p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
@@ -790,13 +791,14 @@ class CardWidget(QWidget):
             self._paint_loader_label(p, start)
         p.setOpacity(1.0)
 
-    def _paint_now(self, p):
+    def _paint_now(self, p, background=True):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setBrush(self._tint() if self.card else self.palette_["surface"])
-        p.setPen(QPen(QColor(255, 255, 255, T.BORDER_ALPHA), 1))
-        p.drawRoundedRect(r, self.radius(), self.radius())
+        if background:
+            r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+            p.setBrush(with_alpha(self._tint() if self.card else self.palette_["surface"], self.pane_alpha))
+            p.setPen(QPen(QColor(255, 255, 255, T.BORDER_ALPHA), 1))
+            p.drawRoundedRect(r, self.radius(), self.radius())
         if self.loading:
             self._paint_loader(p)
         elif self.card:
