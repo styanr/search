@@ -18,10 +18,11 @@ def shadow_rect(widget):
 
 
 class CardBoard:
-    def __init__(self, host, on_copy, on_open, on_pin=None, on_save=None, on_run=None):
+    def __init__(self, host, on_copy, on_open, on_pin=None, on_save=None, on_run=None, on_arrive=None):
         self.host, self.on_copy, self.on_open = host, on_copy, on_open
-        self.on_pin, self.on_save, self.on_run = on_pin, on_save, on_run
+        self.on_pin, self.on_save, self.on_run, self.on_arrive = on_pin, on_save, on_run, on_arrive
         self.cards = []
+        self.busy = False
         self._col = {}
         self._cols = None
         self._pending = []
@@ -47,6 +48,7 @@ class CardBoard:
             self.feed.ready.connect(self._ready)
             self.feed.extra.connect(self._extra)
         self._token = self.feed.start(text, words, route)
+        self.busy = True
 
     @property
     def text(self):
@@ -64,6 +66,7 @@ class CardBoard:
         self._pending = []
         self._anims.clear()
         self._stagger.clear()
+        self.busy = False
         if not keep_request:
             if self.feed is not None:
                 self.feed.cancel()
@@ -110,6 +113,9 @@ class CardBoard:
             self._col = {self.cards[0]: 0}
         self.cards[0].set_card(info, assets)
         self.layout()
+        if self.busy and self.on_arrive is not None:
+            self.on_arrive(self.cards[0])
+        self.busy = False
 
     def _extra(self, token, info, assets):
         if token != self._token or not self.host.cards_wanted() or not self.cards:

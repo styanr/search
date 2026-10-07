@@ -65,18 +65,39 @@ uniform vec4 source;
 uniform float lift;
 uniform vec4 glow;
 uniform vec4 wave;
+uniform vec3 pen;
+uniform vec3 activity;
 uniform vec3 hues[4];
-vec3 aurora(vec2 n, float t, float anchor, float seed) {
-    vec3 sum = vec3(0.0);
-    for (int i = 0; i < 4; i++) {
-        float k = float(i) * 1.7 + seed;
-        vec2 c = vec2((float(i) + 0.5) / 4.0 + 0.07 * sin(t * 0.31 + k), anchor + 0.08 * sin(t * 0.47 + k * 1.3));
-        vec2 r = vec2(0.32 + 0.06 * sin(t * 0.39 + k * 0.7), 0.80 + 0.12 * sin(t * 0.57 + k * 2.1));
-        float d = length((n - c) / r);
-        float a = d < 0.45 ? mix(0.85, 0.35, d / 0.45) : mix(0.35, 0.0, clamp((d - 0.45) / 0.55, 0.0, 1.0));
-        sum += hues[i] * a;
+float hash(vec2 q) { return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 q) {
+    vec2 i = floor(q);
+    vec2 f = fract(q);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 q) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 3; i++) {
+        v += a * noise(q);
+        q = q * 2.03 + vec2(17.0, 9.0);
+        a *= 0.5;
     }
-    return sum;
+    return v / 0.875;
+}
+vec3 hold(float x) {
+    x = mod(x, 4.0);
+    int i = int(floor(x));
+    return mix(hues[i], hues[int(mod(float(i + 1), 4.0))], smoothstep(0.3, 0.7, x - floor(x)));
+}
+vec3 aurora(vec2 n, float t, float anchor, float seed, float lobe) {
+    float x = n.x * view.x / 520.0 + seed;
+    float drift = fbm(vec2(x * 0.7, t * 0.12));
+    float swell = fbm(vec2(x * 0.9 + 5.2, t * 0.1 + 3.0));
+    float d = abs(n.y - anchor) / (0.62 + 0.4 * swell + 0.3 * lobe);
+    float a = d < 0.45 ? mix(0.85, 0.35, d / 0.45) : mix(0.35, 0.0, clamp((d - 0.45) / 0.55, 0.0, 1.0));
+    vec3 c = hold(n.x * 3.6 + seed + 1.4 * (drift - 0.5) + t * 0.03);
+    return c * a * (0.7 + 0.6 * fbm(vec2(x * 1.3 - t * 0.08, 7.0))) * (1.0 + 0.6 * lobe);
 }
 vec3 screen(vec3 a, vec3 b) { return a + b - a * b; }
 void main() {
@@ -94,14 +115,17 @@ void main() {
         }
         c = mix(c, inner, cover(rbox(p, hole, hole_radius)) * opening);
     }
-    if (glow.x > 0.004 && p.y >= glow.z) {
+    if (glow.x > 0.004 && p.y >= glow.z - 0.4 * glow.w) {
         vec2 n = vec2(p.x / view.x, (p.y - glow.z) / glow.w);
-        c = screen(c, min(aurora(n, glow.y, 1.15, 0.0) * glow.x, 1.0));
+        float lobe = pen.y * mix(0.7, 1.6, pen.z) * exp(-pow((p.x - pen.x) / (view.x * mix(0.22, 0.12, pen.z)), 2.0));
+        lobe += activity.y * exp(-pow((p.x - activity.z) / (view.x * 0.3), 2.0));
+        float run = exp(-pow((fract(n.x * 0.6 - glow.y * 0.22) - 0.5) / 0.14, 2.0));
+        c = screen(c, min(aurora(n, glow.y, 1.15, 0.0, lobe) * (1.0 + 0.5 * activity.x * run) * glow.x, 1.0));
     }
     if (wave.x > 0.004 && p.y >= wave.z && p.y <= wave.z + wave.w) {
         vec2 n = vec2(p.x / view.x, (p.y - wave.z) / wave.w);
         float feather = clamp(min(n.y, 1.0 - n.y) / 0.3, 0.0, 1.0);
-        c = screen(c, min(aurora(n, wave.y, 0.5, 2.0) * wave.x, 1.0) * feather);
+        c = screen(c, min(aurora(n, wave.y, 0.5, 2.0, 0.0) * wave.x, 1.0) * feather);
     }
     gl_FragColor = vec4(c, 1.0);
 }
@@ -410,7 +434,7 @@ class Renderer:
     def _full(self):
         return QRectF(0, 0, *self.view)
 
-    def background(self, shade, sweep, hole, glow, wave, lift=None):
+    def background(self, shade, sweep, hole, glow, wave, lift=None, pen=None, activity=(0.0, 0.0, 0.0)):
         program = self._use("background", (ONE, ZERO))
         self.gl.glBindTexture(TEXTURE_2D, self.shot.id)
         program.setUniformValue("shot", 0)
@@ -426,6 +450,9 @@ class Renderer:
         program.setUniformValue("lift", float(amount))
         program.setUniformValue("glow", *map(float, glow))
         program.setUniformValue("wave", *map(float, wave))
+        x, energy, near = pen if pen is not None else (0.0, 0.0, 0.0)
+        program.setUniformValue("pen", float(x), float(energy), float(near))
+        program.setUniformValue("activity", *map(float, activity))
         self._hues(program)
         self._draw(program, array("f", self._quad(self._full())), (("pos", 2), ("uv", 2)))
 

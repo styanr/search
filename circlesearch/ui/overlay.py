@@ -38,6 +38,7 @@ WORD_REVEAL, WORD_CASCADE = 0.22, 0.28
 FRAME_SETTLE = 0.5
 LIFT_GROW, LIFT_MAX = 10, 0.04
 FLOW = 240
+PEN_SPEED = 1600
 MORPH = 0.34
 MORPH_EASE = SpringCurve(0.9, 300.0, MORPH)
 
@@ -107,7 +108,8 @@ class Overlay(QWidget):
         self._pinned = None
         self.typed = False
         self.ocr_gate = None
-        self.board = CardBoard(self, self._card_copy, self._card_open, self._card_pin, self._card_save, self._card_run)
+        self.board = CardBoard(self, self._card_copy, self._card_open, self._card_pin, self._card_save, self._card_run,
+                               self._card_arrived)
 
         self.t0 = time.monotonic()
         self.intro = Tween(0.8)
@@ -129,6 +131,15 @@ class Overlay(QWidget):
         self.bar_tween = None
         self.ambient = AMBIENT
         self._shadows = {}
+        self.energy = 0.0
+        self._travel = 0.0
+        self._energy_at = time.monotonic()
+        self._pen_x = None
+        self._speed = 0.0
+        self._near = 0.0
+        self._busy = 0.0
+        self._phase = 0.0
+        self._bounce = None
         self._chip = None
         self._word_batch = None
         self.ticker = frame_timer(self, self._tick)
@@ -309,8 +320,9 @@ class Overlay(QWidget):
     def _frame(self):
         now = time.monotonic()
         working = self.reading
+        self._step_energy(now)
         if self.exit is None:
-            self.aurora.set(0.85 if working else 0.5)
+            self.aurora.set(0.85 if working or self._working() else 0.5)
             self.chip.set(1.0 if ((self.selection is None and not self.typed) or self.status) else 0.0)
             self.scrim_selected.set(1.0 if self.selection is not None else 0.0)
 
@@ -330,7 +342,44 @@ class Overlay(QWidget):
         if self._moving(now):
             self.backdrop.update()
 
+    def _working(self):
+        return self.reading or self.refining or self.board.busy
+
+    def _card_arrived(self, card):
+        if self.ambient and self.exit is None:
+            self._bounce = (time.monotonic(), card.x() + card.width() / 2)
+
+    def _bounce_at(self, now):
+        if self._bounce is None:
+            return 0.0, 0.0
+        t = now - self._bounce[0]
+        if t > 1.2:
+            self._bounce = None
+            return 0.0, 0.0
+        return 1.4 * math.exp(-t / 0.25) * math.sin(2 * math.pi * t / 0.55), self._bounce[1]
+
+    def _step_energy(self, now):
+        dt = max(1e-3, now - self._energy_at)
+        self._energy_at = now
+        busy = 1.0 if self._working() and self.ambient else 0.0
+        self._busy += (busy - self._busy) * (1 - math.exp(-dt / 0.4))
+        if self.ambient:
+            self._phase += dt * (1 + 1.6 * self._busy)
+        drawing = self.ink is not None and self.ambient
+        self._speed += ((self._travel / dt if drawing else 0.0) - self._speed) * (1 - math.exp(-dt / 0.15))
+        self._travel = 0.0
+        if drawing:
+            pos = self.ink.cursor
+            near = min(1.0, max(0.0, 1 - (self.height() - pos.y()) / (self.height() * 0.6)))
+            self._near += (near * near * (3 - 2 * near) - self._near) * (1 - math.exp(-dt / 0.3))
+            lag = 0.5 - 0.35 * self._near
+            self._pen_x = pos.x() if self._pen_x is None else self._pen_x + (pos.x() - self._pen_x) * (1 - math.exp(-dt / lag))
+        target = max(min(1.0, self._speed / PEN_SPEED), 0.35 * self._near) if drawing else 0.0
+        self.energy += (target - self.energy) * (1 - math.exp(-dt / (0.45 if target > self.energy else 1.2)))
+
     def _moving(self, now):
+        if self.energy > 0.002 or self._busy > 0.002 or self._bounce is not None:
+            return True
         if self.ambient or self.exit is not None or self.morph is not None or not self.intro.done(now):
             return True
         if any(a.active(now) for a in (self.aurora, self.chip, self.scrim_selected)):
@@ -417,11 +466,15 @@ class Overlay(QWidget):
         if e.button() == Qt.MouseButton.LeftButton:
             self.selecting.emit(self)
             self.ink = InkStroke(e.position())
+            if self.energy < 0.02:
+                self._pen_x = None
             self.backdrop.update()
 
     def mouseMoveEvent(self, e):
         if self.ink is not None:
+            last = self.ink.cursor
             self.ink.add(e.position())
+            self._travel += math.hypot(e.position().x() - last.x(), e.position().y() - last.y())
             self.backdrop.update()
 
     def mouseReleaseEvent(self, e):
@@ -854,7 +907,8 @@ class Overlay(QWidget):
         g.begin(self.width(), self.height(), self.backdrop.devicePixelRatio())
         front = self._sweep_front(intro)
         band = SWEEP_EDGE * 1.6
-        glow = self.aurora.get(now) * fade * min(1.0, intro * 1.6)
+        glow = (self.aurora.get(now) + 0.15 * self.energy) * fade * min(1.0, intro * 1.6)
+        flow, spin = self._flow(now), self._spin(now)
         wave = (1.0 - intro) ** 0.7 * fade if intro < 1.0 else 0.0
         hole = lift = None
         if self.selection is not None:
@@ -864,11 +918,12 @@ class Overlay(QWidget):
             hole, lift = (lifted, lifted_radius, self._opening(now)), (rect, amount)
         g.background(shade=(self.scrim_top, self.scrim_bottom, SCRIM_SELECTED * self.scrim_selected.get(now), fade),
                      sweep=(front, SWEEP_EDGE), hole=hole, lift=lift,
-                     glow=(glow if glow > 0.01 else 0.0, t, self.height() - AURORA_HEIGHT, AURORA_HEIGHT),
-                     wave=(wave, t + 3.0, front - band * 0.55, band))
+                     glow=(glow if glow > 0.01 else 0.0, self._phase, self.height() - AURORA_HEIGHT, AURORA_HEIGHT),
+                     wave=(wave, t + 3.0, front - band * 0.55, band),
+                     pen=(self._pen_x or 0.0, self.energy, self._near),
+                     activity=(self._busy, *self._bounce_at(now)))
         if self.selection is not None:
             self._paint_selection(g, now, t, fade)
-        flow, spin = self._flow(now), self._spin(now)
         if self.morph is not None:
             ink, line, goals, tween = self.morph
             g.ink(ink, fade, flow, spin, tip=False, line=line, goals=goals, morph=tween.value(now),
