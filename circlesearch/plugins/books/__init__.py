@@ -4,7 +4,7 @@ from circlesearch.core.cards import Action
 from circlesearch.core.net import get_json
 from circlesearch.plugins.wikidata import work_extra
 
-FIELDS = "key,ratings_average,ratings_count,number_of_pages_median"
+FIELDS = "key,cover_i,ratings_average,ratings_count,number_of_pages_median"
 
 
 @work_extra("book")
@@ -23,4 +23,5 @@ def open_library(info):
         rows.append(("Rating", f"{doc['ratings_average']:.1f} ★ ({doc['ratings_count']:,})"))
     if doc.get("number_of_pages_median"):
         rows.append(("Pages", f"{doc['number_of_pages_median']:,}"))
-    return rows, [Action("Open Library", "open", "https://openlibrary.org" + doc["key"])]
+    cover = f"https://covers.openlibrary.org/b/id/{doc['cover_i']}-M.jpg" if doc.get("cover_i") else None
+    return rows, [Action("Open Library", "open", "https://openlibrary.org" + doc["key"])], cover

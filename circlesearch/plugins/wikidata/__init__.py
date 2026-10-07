@@ -6,7 +6,7 @@ from datetime import date
 
 from circlesearch.core.cards import Action, Card
 from circlesearch.core.locale import current
-from circlesearch.core.net import get_json, safe
+from circlesearch.core.net import get_bytes, get_json, safe
 from circlesearch.core.pipeline import enricher
 
 WDQS = "https://query.wikidata.org/sparql?format=json&query="
@@ -26,6 +26,7 @@ class FactsCard(Card):
     accent = "blue"
 
     rows: list[tuple[str, str]] = field(default_factory=list)
+    image: bytes | None = None
 
 
 def _sparql(endpoint, query):
@@ -90,6 +91,13 @@ def _date(iso):
 
 
 work_extras = {}
+
+
+def wikipedia_thumb(title):
+    if not title:
+        return None
+    data = get_json("https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title.replace(" ", "_")))
+    return ((data or {}).get("thumbnail") or {}).get("source")
 
 
 def work_extra(*kinds):
@@ -191,7 +199,7 @@ def wikidata_facts(facts):
             work = "song"
 
     rows, new = [], {}
-    extra_actions = []
+    extra_actions, cover = [], None
     if work:
         rows, new = work_rows(work, claims, labels, first, year, imdb)
         info = {"name": re.sub(r"\s*\([^)]*\)\s*$", "", facts.get("title", "")).strip(),
@@ -201,6 +209,7 @@ def wikidata_facts(facts):
             if found:
                 rows += found[0]
                 extra_actions += found[1]
+                cover = cover or (found[2] if len(found) > 2 else None)
     elif is_person:
         born, died = first("P569"), first("P570")
         if born:
@@ -271,5 +280,9 @@ def wikidata_facts(facts):
         kind = {"album": "Album", "song": "Song", "book": "Book", "film": "Film", "series": "TV series"}[work]
         name = re.sub(r"\s*\([^)]*\)\s*$", "", facts.get("title", "")).strip()
         title = f"{name} · {kind}" if name else kind
-    return [FactsCard(title=title or "At a glance", rows=shown, actions=actions, source="Wikidata",
+    picture = None
+    if work:
+        cover = cover or safe(wikipedia_thumb, facts.get("title", ""))
+        picture = safe(get_bytes, cover) if cover else None
+    return [FactsCard(title=title or "At a glance", rows=shown, actions=actions, source="Wikidata", image=picture,
                       url=f"https://www.wikidata.org/wiki/{qid}")], new

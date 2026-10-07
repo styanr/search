@@ -1,9 +1,9 @@
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QFontMetrics
+from PyQt6.QtGui import QColor, QFontMetrics, QPainterPath, QPen
 
 from circlesearch.plugins.wikidata import FactsCard
 from circlesearch.ui import tokens as T
-from circlesearch.ui.cards import CardView, view
+from circlesearch.ui.cards import CardView, decode, view
 from circlesearch.ui.shapes import glyph
 from circlesearch.ui.theme import C, type_font
 
@@ -19,9 +19,36 @@ GLYPHS = {"Population": "people", "Area": "area", "Elevation": "mountain", "Foun
 
 @view(FactsCard)
 class FactsView(CardView):
+    @staticmethod
+    def prepare(card):
+        return {"cover": decode(card.image)}
+
+    def cover_header(self, p, cover):
+        pad, h = self.PAD, 112
+        w = min(88, max(56, round(h * cover.width() / cover.height())))
+        box = QRectF(pad, pad, w, h)
+        if p:
+            clip = QPainterPath()
+            clip.addRoundedRect(box, 12, 12)
+            p.save()
+            p.setClipPath(clip)
+            p.drawImage(box, cover)
+            p.restore()
+            p.setPen(QPen(QColor(255, 255, 255, T.BORDER_ALPHA), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(box, 12, 12)
+        name, _, kind = self.card.title.partition(" · ")
+        tx, tw = pad + w + 16, self.inner - w - 16
+        ty = pad + 4
+        ty += self.text(p, name, tx, ty, tw, "headline", lines=3)[0] + 2
+        if kind:
+            self.text(p, kind, tx, ty, tw, "body_small", self.c["on_surface_variant"])
+        return max(pad + h, ty + 20) + T.SECTION
+
     def layout(self, p, targets):
         card, pad = self.card, self.PAD
-        y = self.header(p, pad, card.title)
+        cover = self.assets.get("cover")
+        y = self.cover_header(p, cover) if cover is not None else self.header(p, pad, card.title)
         gap, row_h = T.GAP, 70
         half = (self.inner - gap) / 2
         vf = QFontMetrics(type_font("subhead", 620))
