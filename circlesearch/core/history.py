@@ -36,7 +36,7 @@ def add(kind, text):
 def _write(entries):
     os.makedirs(os.path.dirname(path()), exist_ok=True)
     tmp = path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with settings.open_private(tmp) as f:
         for e in reversed(entries[:LIMIT]):
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
     os.replace(tmp, path())
@@ -78,8 +78,9 @@ def recent(limit=8, query=""):
 
 
 def remove(text):
+    key = tidy(text).lower()
     if os.path.exists(path()):
-        _write([e for e in load(LIMIT * 2) if e["text"] != text])
+        _write([e for e in load(LIMIT * 2) if tidy(e["text"]).lower() != key])
 
 
 def clear():

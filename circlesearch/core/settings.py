@@ -75,9 +75,6 @@ def merge(data, defaults, prefix=""):
 
 
 def load(path=CONFIG_PATH):
-    legacy = sorted(name for name in os.environ if name.startswith("CIRCLE_SEARCH_"))
-    if legacy:
-        warn(f"environment variables are no longer read ({', '.join(legacy)}), put them in {path}")
     return merge(read(path), DEFAULTS)
 
 
@@ -100,12 +97,20 @@ def dump(config):
     return "\n".join(lines) + "\n" if lines else ""
 
 
+def open_private(path):
+    def opener(name, flags):
+        fd = os.open(name, flags, 0o600)
+        os.fchmod(fd, 0o600)
+        return fd
+    return open(path, "w", encoding="utf-8", opener=opener)
+
+
 def save(changed, path=CONFIG_PATH):
     new = merge({key: {**config[key], **value} if isinstance(value, dict) else value
                  for key, value in {**config, **changed}.items()}, DEFAULTS)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     temp = path + ".tmp"
-    with open(temp, "w", encoding="utf-8") as f:
+    with open_private(temp) as f:
         f.write(dump(new))
     os.replace(temp, path)
     apply(new)

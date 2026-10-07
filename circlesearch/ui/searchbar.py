@@ -1,7 +1,7 @@
 import time
 
 from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPalette, QPen
+from PyQt6.QtGui import QBrush, QColor, QCursor, QFontMetrics, QLinearGradient, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import QAbstractButton, QGraphicsOpacityEffect, QHBoxLayout, QLineEdit, QWidget
 
 from circlesearch.core import history
@@ -181,12 +181,15 @@ class RecentList(QWidget):
     picked = pyqtSignal(str)
     ROW = 44
     LIMIT = 6
+    CLOSE = 28
 
     def __init__(self, parent):
         super().__init__(parent)
         self.entries = []
         self.active = -1
         self.hot = -1
+        self.over_close = False
+        self._bar, self._query = None, ""
         self.open = Spring(520, 0.86)
         self.t0 = time.monotonic()
         self._last = time.monotonic()
@@ -196,11 +199,12 @@ class RecentList(QWidget):
         self.hide()
 
     def show_for(self, bar, query=""):
+        self._bar, self._query = bar, query
         self.entries = history.recent(self.LIMIT, query)
         if not self.entries:
             self.close_list()
             return False
-        self.active, self.hot = -1, -1
+        self.active, self.hot, self.over_close = -1, -1, False
         width = bar.width()
         height = len(self.entries) * self.ROW + 16
         below = bar.y() + bar.height() + 10
@@ -228,6 +232,14 @@ class RecentList(QWidget):
     def current(self):
         return self.entries[self.active]["text"] if 0 <= self.active < len(self.entries) else None
 
+    def remove(self, i):
+        history.remove(self.entries[i]["text"])
+        active = self.active - (self.active > i)
+        if self.show_for(self._bar, self._query):
+            self.active = min(active, len(self.entries) - 1)
+            pos = self.mapFromGlobal(QCursor.pos())
+            self._hover(QPointF(pos) if self.rect().contains(pos) else None)
+
     def _wake(self):
         if not self.timer.isActive():
             self._last = time.monotonic()
@@ -249,19 +261,33 @@ class RecentList(QWidget):
         i = int((pos.y() - 8) // self.ROW)
         return i if 0 <= i < len(self.entries) else -1
 
-    def mouseMoveEvent(self, e):
-        hot = self._row_at(e.position())
-        if hot != self.hot:
-            self.hot = hot
+    def _close_rect(self, row):
+        return QRectF(row.right() - 8 - self.CLOSE, row.center().y() - self.CLOSE / 2, self.CLOSE, self.CLOSE)
+
+    def _over_close(self, i, pos):
+        row = QRectF(8, 8 + i * self.ROW, self.width() - 16, self.ROW)
+        return self._close_rect(row).contains(pos)
+
+    def _hover(self, pos):
+        hot = self._row_at(pos) if pos is not None else -1
+        over = hot >= 0 and self._over_close(hot, pos)
+        if (hot, over) != (self.hot, self.over_close):
+            self.hot, self.over_close = hot, over
             self.update()
 
+    def mouseMoveEvent(self, e):
+        self._hover(e.position())
+
     def leaveEvent(self, e):
-        self.hot = -1
-        self.update()
+        self._hover(None)
 
     def mousePressEvent(self, e):
         i = self._row_at(e.position())
-        if i >= 0:
+        if i < 0:
+            return
+        if self._over_close(i, e.position()):
+            self.remove(i)
+        else:
             self.picked.emit(self.entries[i]["text"])
 
     def paintEvent(self, _):
@@ -292,8 +318,16 @@ class RecentList(QWidget):
                   ON_SURFACE_VARIANT)
             p.setFont(f)
             p.setPen(ON_SURFACE)
-            text = fm.elidedText(e["text"], Qt.TextElideMode.ElideRight, int(row.width() - 60))
-            p.drawText(QRectF(row.left() + 46, row.top(), row.width() - 60, row.height()), Qt.AlignmentFlag.AlignVCenter, text)
+            room = row.width() - 46 - self.CLOSE - 16
+            text = fm.elidedText(e["text"], Qt.TextElideMode.ElideRight, int(room))
+            p.drawText(QRectF(row.left() + 46, row.top(), room, row.height()), Qt.AlignmentFlag.AlignVCenter, text)
+            if i in (self.active, self.hot):
+                close = self._close_rect(row)
+                if i == self.hot and self.over_close:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(with_alpha(ON_SURFACE, T.HOVER_ALPHA * 1.4 / 255))
+                    p.drawEllipse(close)
+                glyph(p, "close", close.adjusted(6, 6, -6, -6), ON_SURFACE_VARIANT)
 
 
 class SearchBar(QWidget):
@@ -419,6 +453,10 @@ class SearchBar(QWidget):
                 return True
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.recent.isVisible() and self.recent.current():
                 self._pick(self.recent.current())
+                return True
+            if key == Qt.Key.Key_Delete and e.modifiers() & Qt.KeyboardModifier.ShiftModifier \
+                    and self.recent.isVisible() and self.recent.open.target > 0 and self.recent.current():
+                self.recent.remove(self.recent.active)
                 return True
         if obj is self.edit and e.type() == QEvent.Type.ShortcutOverride and e.key() == Qt.Key.Key_Escape \
                 and self.recent.isVisible() and self.recent.open.target > 0:
