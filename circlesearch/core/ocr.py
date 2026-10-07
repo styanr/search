@@ -1,5 +1,4 @@
 import os
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -100,8 +99,7 @@ class Tesseract:
             except (OSError, subprocess.SubprocessError):
                 have = set()
             loc = current()
-            extra = re.split(r"[+,\s]+", settings.OCR_LANGUAGES)
-            wanted = dict.fromkeys(["eng", loc.ocr_language(loc.language), *extra])
+            wanted = dict.fromkeys(["eng", loc.ocr_language(loc.language), *settings.OCR_LANGUAGES])
             self._langs = "+".join(lang for lang in wanted if lang and lang in have) or "eng"
         return self._langs
 

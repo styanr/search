@@ -56,7 +56,7 @@ Names in other scripts (for example "Львів" or "東京") are found on the W
 ## Requirements
 
 - KDE Plasma 6 or GNOME, on Wayland
-- Python 3.10 or newer
+- Python 3.11 or newer, or Python 3.10 with the `tomli` package
 - PyQt6
 - Tesseract OCR with the English language pack, and packs for other languages you want to read
 - Hunspell English dictionary (used to tell words from names)
@@ -177,25 +177,32 @@ Run with `--instant` to search as soon as you finish circling.
 
 ## Settings
 
-Settings are environment variables. To set them for every login, put them in `~/.config/environment.d/circle-search.conf`, one per line:
+Settings are read from `~/.config/circle-search/config.toml` (or `$XDG_CONFIG_HOME/circle-search/config.toml`) each time the app starts. The file is optional, and any setting left out keeps its default:
 
-```
-CIRCLE_SEARCH_CONTACT=you@example.com
-CIRCLE_SEARCH_OCR_LANGUAGES=jpn+ell
+```toml
+contact = "you@example.com"
+
+[locale]
+units = "imperial"
+
+[ocr]
+languages = ["jpn", "ell"]
 ```
 
-| Variable | Default | Meaning |
+| Setting | Default | Meaning |
 |---|---|---|
-| `CIRCLE_SEARCH_CONTACT` | none | Your email or website. Sent to Wikimedia, OpenStreetMap and MusicBrainz only, because their rules ask for a contact. |
-| `CIRCLE_SEARCH_LANGUAGE` | from your regional settings | Language for translations, as a two-letter code (`uk`, `de`). |
-| `CIRCLE_SEARCH_CURRENCY` | from your regional settings | Currency to convert to (`UAH`, `EUR`). |
-| `CIRCLE_SEARCH_UNITS` | from your regional settings | `metric` or `imperial`. |
-| `CIRCLE_SEARCH_OCR_LANGUAGES` | none | Extra OCR languages, joined with `+` (`jpn+ell`). English and your own language are always used. Each extra language makes OCR slower. |
-| `CIRCLE_SEARCH_CARDS` | `1` | Set to `0` to turn off cards. |
-| `CIRCLE_SEARCH_DEBUG` | `0` | Set to `1` to save each screenshot and OCR result to `~/.cache/circle-search/debug/`. |
-| `CIRCLE_SEARCH_ROUTER` | `local` | Which router decides the kind of selection. Only `local` is built in. |
-| `CIRCLE_SEARCH_GPU` | `auto` | Set to `lite` to stop the glow and shimmer from animating. This is automatic with software OpenGL (llvmpipe). |
-| `CIRCLE_SEARCH_HISTORY` | `1` | Set to `0` to stop saving recent selections and searches to `~/.local/share/circle-search/history.jsonl`. |
+| `contact` | none | Your email or website. Sent to Wikimedia, OpenStreetMap and MusicBrainz only, because their rules ask for a contact. |
+| `cards` | `true` | Set to `false` to turn off cards. |
+| `history` | `true` | Set to `false` to stop saving recent selections and searches to `~/.local/share/circle-search/history.jsonl`. |
+| `gpu` | `"auto"` | Set to `"lite"` to stop the glow and shimmer from animating. This is automatic with software OpenGL (llvmpipe). |
+| `router` | `"local"` | Which router decides the kind of selection. Only `"local"` is built in. |
+| `debug` | `false` | Set to `true` to save each screenshot and OCR result to `~/.cache/circle-search/debug/`. |
+| `locale.language` | from your regional settings | Language for translations, as a two-letter code (`"uk"`, `"de"`). |
+| `locale.currency` | from your regional settings | Currency to convert to (`"UAH"`, `"EUR"`). |
+| `locale.units` | from your regional settings | `"metric"` or `"imperial"`. |
+| `ocr.languages` | none | Extra OCR languages (`["jpn", "ell"]`). Each one needs its Tesseract language pack. English and your own language are always used. Each extra language makes OCR slower. |
+
+If the file has a mistake, the app says so on standard error and uses the default for that setting. Older versions read `CIRCLE_SEARCH_*` environment variables; those are no longer read.
 
 The app reads your language, currency and units from the KDE regional settings (`LC_ADDRESS`, `LC_MONETARY`, `LC_MEASUREMENT`). The card text is in English.
 
@@ -234,6 +241,7 @@ OCR runs on your computer. Cards and searches use these online services. The sel
 | `core/layout.py` | Tables and code rebuilt from the positions of the words |
 | `core/history.py` | Recent selections and searches |
 | `core/locale.py` | Your language, currency and units, and how to format them |
+| `core/settings.py` | Reads the settings file |
 | `core/actions.py` | Search, Lens, open and copy |
 | `circlesearch/plugins/` | One folder for each feature: weather, money, places and so on |
 | `circlesearch/ui/` | The Qt app: overlay, search bar, card board, card widgets, pins, screenshots |
