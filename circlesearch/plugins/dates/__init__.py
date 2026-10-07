@@ -81,6 +81,7 @@ MEETING_URL = re.compile(r"https?://(?:[\w-]+\.)?(?:zoom\.us|meet\.google\.com|t
                          r"teams\.live\.com|meet\.jit\.si|whereby\.com)\S*", re.I)
 CLOCK = re.compile(r"(?:\b(?:at|from|@)\s+)?\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?"
                    r"(?:\s*(?:-|–|—|to|till|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?)?(?!\w)", re.I)
+NAMED_TIME = re.compile(r"(\b(?:at|from)\s+|@\s*)?(\b12(?::00)?\s*)?\b(noon|midday|midnight)\b", re.I)
 DURATION = re.compile(r"\(?\b(?:for\s+)?(\d+(?:[.,]\d+)?)\s*(h|hr|hrs|hours?|m|min|mins|minutes?)\b\)?", re.I)
 RELATIVE = re.compile(r"\b(today|tonight|tomorrow|day after tomorrow|in (\d{1,2}) days?)\b", re.I)
 SHORT = re.compile(r"\b(standup|stand-up|sync|call|check-in|1:1|catch-up|catchup)\b", re.I)
@@ -172,6 +173,8 @@ def parse_event(text):
     day, span, how = _find_day(t, today)
     if span:
         t = _cut(t, span)
+    t = NAMED_TIME.sub(lambda m: ("12am" if m.group(3).lower() == "midnight" else "12pm")
+                       if day is not None or m.group(1) or m.group(2) else m.group(0), t)
     clock = None
     for m in CLOCK.finditer(t):
         has_colon, has_ap = m.group(2) is not None, m.group(3) is not None
@@ -211,6 +214,8 @@ def parse_event(text):
         day = today
         if clock and datetime.combine(today, datetime.min.time()).replace(hour=clock[0][0], minute=clock[0][1]) < datetime.now():
             day = today + timedelta(days=1)
+    if how is True and clock and clock[0] == (0, 0):
+        day += timedelta(days=1)
     if clock is None:
         if how is True:
             clock = ((20, 0), None)

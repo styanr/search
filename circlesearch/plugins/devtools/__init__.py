@@ -14,7 +14,7 @@ from circlesearch.core.pipeline import resolver
 from circlesearch.core.routing import recognizer
 from circlesearch.plugins.devtools import errors as E
 
-UNIX_MIN, UNIX_MAX = 631152000, 4102444800
+UNIX_MIN, UNIX_MAX = 946684800, 4102444800
 TICKS_EPOCH = 621355968000000000
 ISO = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d{1,9})?)?\s?(?:Z|[+-]\d{2}:?\d{2}|UTC)?$", re.I)
 RFC2822 = re.compile(r"^(?:[A-Z][a-z]{2},\s)?\d{1,2}\s[A-Z][a-z]{2}\s\d{4}\s\d{2}:\d{2}(?::\d{2})?\s(?:GMT|UTC|[+-]\d{4})$")
@@ -401,20 +401,27 @@ def from_unix(value):
     return datetime.fromtimestamp(value, timezone.utc)
 
 
+def placeholder(digits):
+    return len(set(digits)) == 1 or digits in "0123456789" * 3 or digits in "9876543210" * 3
+
+
 @recognizer("timestamp", order=36, max_chars=48)
 def parse_timestamp(text):
     t = text.strip().strip("\"'")
-    if re.fullmatch(r"\d{9,19}(?:\.\d{1,9})?", t):
+    if re.fullmatch(r"\d{10,19}(?:\.\d{1,9})?", t):
         whole, _, frac = t.partition(".")
+        if placeholder(whole):
+            return None
         n = len(whole)
         value = float(t)
-        for digits, scale, label in ((10, 1, "Unix seconds"), (9, 1, "Unix seconds"), (13, 1e3, "Unix milliseconds"),
-                                     (12, 1e3, "Unix milliseconds"), (16, 1e6, "Unix microseconds"),
-                                     (19, 1e9, "Unix nanoseconds")):
+        for digits, scale, label in ((10, 1, "Unix seconds"), (13, 1e3, "Unix milliseconds"),
+                                     (16, 1e6, "Unix microseconds"), (19, 1e9, "Unix nanoseconds")):
             if n == digits and UNIX_MIN <= value / scale <= UNIX_MAX:
                 return from_unix(value / scale), label
-        if n == 18 and not frac and TICKS_EPOCH <= int(t) <= TICKS_EPOCH + UNIX_MAX * 10_000_000:
-            return from_unix((int(t) - TICKS_EPOCH) / 10_000_000), ".NET ticks"
+        if n == 18 and not frac:
+            seconds = (int(t) - TICKS_EPOCH) / 10_000_000
+            if UNIX_MIN <= seconds <= UNIX_MAX:
+                return from_unix(seconds), ".NET ticks"
         return None
     if ISO.match(t):
         s = re.sub(r"\s?UTC$", "+00:00", t, flags=re.I).replace(",", ".")
