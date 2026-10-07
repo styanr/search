@@ -188,7 +188,7 @@ def look_up(route):
                         part_of_speech=pos, definition=definition,
                         description="" if lang == "en" else loc.language_name(lang),
                         translation=translation, translation_label=loc.language_name(target),
-                        alternatives=alts, source="Wiktionary",
+                        alternatives=alts, source="Wiktionary", facts={"name": t},
                         url="https://en.wiktionary.org/wiki/" + urllib.parse.quote(t.replace(" ", "_")))
     if wiki is None and english:
         wiki = safe(wikipedia, t)

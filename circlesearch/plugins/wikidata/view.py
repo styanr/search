@@ -11,7 +11,10 @@ GLYPHS = {"Population": "people", "Area": "area", "Elevation": "mountain", "Foun
           "Currency": "coins", "Languages": "chat", "Calling code": "phone", "Developer": "person", "Latest version": "tag",
           "Licence": "tag", "Written in": "code", "First released": "calendar", "Born": "calendar", "Died": "calendar",
           "Occupation": "person", "Citizenship": "capital", "Country": "capital", "Headquarters": "capital",
-          "Chief executive": "person", "Employees": "people", "Industry": "tag"}
+          "Chief executive": "person", "Employees": "people", "Industry": "tag", "Author": "person", "Artist": "person",
+          "Directed by": "person", "Starring": "people", "Created by": "person", "Released": "calendar",
+          "First published": "calendar", "First aired": "calendar", "Runtime": "clock", "Length": "clock",
+          "Genre": "tag", "Seasons": "tag"}
 
 
 @view(FactsCard)

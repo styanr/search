@@ -12,7 +12,8 @@ from circlesearch.core.pipeline import enricher
 WDQS = "https://query.wikidata.org/sparql?format=json&query="
 QLEVER = "https://qlever.dev/api/wikidata?query="
 WD_PROPS = ("P31 P17 P36 P37 P38 P474 P1082 P2046 P2044 P571 P577 P569 P570 P27 P106 P856 P1324 P277 P275 "
-            "P178 P348 P159 P169 P1128 P452 P498 P297 P5568 P8262").split()
+            "P178 P348 P159 P169 P1128 P452 P498 P297 P5568 P8262 P50 P57 P136 P161 P170 P175 P212 P957 P8383 P436 P435 P345 "
+            "P4947 P4983 P8600 P495 P2047 P2437 P2205 P2207").split()
 SPARQL_PREFIXES = ("PREFIX wd: <http://www.wikidata.org/entity/>\nPREFIX wdt: <http://www.wikidata.org/prop/direct/>\n"
                    "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\n")
 
@@ -88,6 +89,59 @@ def _date(iso):
         return m.group(2)
 
 
+def genres(labels):
+    return ", ".join(re.sub(r"\s+(film|series)$", "", g, flags=re.I) for g in labels("P136", 2).split(", ") if g)
+
+
+def work_rows(work, claims, labels, first, year, imdb):
+    new = {}
+    for key, pid in (("isbn", "P212"), ("tvmaze", "P8600")):
+        if first(pid):
+            new[key] = first(pid)
+    if work == "album" and first("P436"):
+        new["mb_rg"] = first("P436")
+    if imdb:
+        new["imdb"] = imdb
+    length = None
+    if first("P2047"):
+        try:
+            amount = float(first("P2047"))
+            if work in ("song", "album"):
+                total = int(amount)
+                length = f"{total // 3600}:{total % 3600 // 60:02d}:{total % 60:02d}" if total >= 3600 \
+                    else f"{total // 60}:{total % 60:02d}"
+            else:
+                length = f"{amount:.0f} min"
+        except ValueError:
+            pass
+    if work == "book":
+        rows = [("Author", labels("P50", 3)), ("First published", year("P577") or ""), ("Genre", genres(labels))]
+    elif work in ("album", "song"):
+        rows = [("Artist", labels("P175", 3)), ("Released", year("P577") or ""), ("Genre", genres(labels))]
+        if length:
+            rows.append(("Length", length))
+    elif work == "series":
+        rows = [("Created by", labels("P170", 2)), ("Starring", labels("P161", 4)), ("Seasons", first("P2437") or ""),
+                ("First aired", year("P577") or ""), ("Genre", genres(labels)), ("Country", labels("P495", 1))]
+    else:
+        rows = [("Directed by", labels("P57", 2)), ("Starring", labels("P161", 4)), ("Released", year("P577") or ""),
+                ("Runtime", length or ""), ("Genre", genres(labels)), ("Country", labels("P495", 1))]
+    return rows, new
+
+
+def work_actions(claims, first, imdb):
+    out = []
+    if imdb:
+        out.append(Action("IMDb", "open", f"https://www.imdb.com/title/{imdb}/"))
+    if first("P2205"):
+        out.append(Action("Spotify", "open", f"https://open.spotify.com/album/{first('P2205')}"))
+    elif first("P2207"):
+        out.append(Action("Spotify", "open", f"https://open.spotify.com/track/{first('P2207')}"))
+    if first("P8383"):
+        out.append(Action("Goodreads", "open", f"https://www.goodreads.com/work/editions/{first('P8383')}"))
+    return out
+
+
 @enricher("wikidata", needs={"qid"}, order=20)
 def wikidata_facts(facts):
     qid = facts["qid"]
@@ -111,9 +165,24 @@ def wikidata_facts(facts):
     is_software = any(p in claims for p in ("P348", "P1324", "P277")) and not is_person
     is_org = any(p in claims for p in ("P1128", "P159", "P169", "P452")) and not (is_person or is_country)
     is_place = not (is_person or is_country or is_org or is_software) and ("P1082" in claims or "P2044" in claims)
+    imdb = first("P345") if str(first("P345")).startswith("tt") else None
+    work = None
+    if not (is_person or is_country or is_org or is_software or is_place):
+        if any(p in claims for p in ("P2437", "P4983", "P8600")):
+            work = "series"
+        elif imdb or "P4947" in claims or "P57" in claims:
+            work = "film"
+        elif any(p in claims for p in ("P212", "P957", "P8383", "P50")):
+            work = "book"
+        elif "P436" in claims:
+            work = "album"
+        elif "P435" in claims and "P175" in claims:
+            work = "song"
 
     rows, new = [], {}
-    if is_person:
+    if work:
+        rows, new = work_rows(work, claims, labels, first, year, imdb)
+    elif is_person:
         born, died = first("P569"), first("P570")
         if born:
             b = _date(born)
@@ -173,8 +242,15 @@ def wikidata_facts(facts):
             break
 
     shown = [(name, value) for name, value in rows if value]
-    if len(shown) < 3:
+    if len(shown) < (2 if work else 3):
         return [], new
     actions = [Action("Website", "open", first("P856"))] if first("P856") else []
-    return [FactsCard(title="At a glance", rows=shown, actions=actions, source="Wikidata",
+    if work:
+        actions = work_actions(claims, first, imdb)
+    title = None
+    if work:
+        kind = {"album": "Album", "song": "Song", "book": "Book", "film": "Film", "series": "TV series"}[work]
+        name = re.sub(r"\s*\([^)]*\)\s*$", "", facts.get("title", "")).strip()
+        title = f"{name} · {kind}" if name else kind
+    return [FactsCard(title=title or "At a glance", rows=shown, actions=actions, source="Wikidata",
                       url=f"https://www.wikidata.org/wiki/{qid}")], new
