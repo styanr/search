@@ -1,8 +1,7 @@
 import math
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt
-from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
-                         QRadialGradient, QRegion)
+from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
 
 from circlesearch.ui.motion import mix, with_alpha
 from circlesearch.ui.shapes import STARS
@@ -71,46 +70,6 @@ def draw_check(p, center, progress, color, size=7.0):
     p.setPen(QPen(color, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawPath(path)
-
-
-def google_gradient(center, angle, alpha=1.0):
-    g = QConicalGradient(center, angle)
-    for i, hue in enumerate(GOOGLE + GOOGLE[:1]):
-        g.setColorAt(i / len(GOOGLE), with_alpha(hue, alpha))
-    return g
-
-
-def aurora_image(width, height, t, strength, anchor=0.95, seed=0.0, feather=False):
-    w, h = max(8, int(width / 10)), max(6, int(height / 10))
-    img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
-    img.fill(0)
-    p = QPainter(img)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-    n = len(GOOGLE)
-    for i, hue in enumerate(GOOGLE):
-        k = i * 1.7 + seed
-        cx = w * ((i + 0.5) / n + 0.07 * math.sin(t * 0.31 + k))
-        cy = h * (anchor + 0.08 * math.sin(t * 0.47 + k * 1.3))
-        rx = w * (0.32 + 0.06 * math.sin(t * 0.39 + k * 0.7))
-        ry = h * (0.80 + 0.12 * math.sin(t * 0.57 + k * 2.1))
-        g = QRadialGradient(QPointF(0, 0), 1.0)
-        g.setColorAt(0.0, with_alpha(hue, 0.85 * strength))
-        g.setColorAt(0.45, with_alpha(hue, 0.35 * strength))
-        g.setColorAt(1.0, with_alpha(hue, 0.0))
-        p.save()
-        p.translate(cx, cy)
-        p.scale(rx, ry)
-        p.fillRect(QRectF(-1, -1, 2, 2), g)
-        p.restore()
-    if feather:
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-        mask = QLinearGradient(0, 0, 0, h)
-        for stop, a in ((0.0, 0), (0.3, 255), (0.7, 255), (1.0, 0)):
-            mask.setColorAt(stop, QColor(0, 0, 0, a))
-        p.fillRect(QRectF(0, 0, w, h), QBrush(mask))
-    p.end()
-    return img
 
 
 def lightness_at(image, points):
@@ -188,6 +147,9 @@ class InkStroke:
         self.halo.fill(0)
         self._kernel = gaussian(self.GLOW_SIGMA)
         self._dirty = QRect()
+        self._halo_dirty = QRect()
+        self._core_dirty = QRect()
+        self._transient = []
         self.points = [start]
         self._extent = [start.x(), start.y(), start.x(), start.y()]
         self.mid = start
@@ -244,6 +206,7 @@ class InkStroke:
         taper = self._taper(self.length + seg / 2)
         self.length += seg
         core, highlight = self._pens(color, taper)
+        self._core_dirty = self._core_dirty.united(self._device_rect(path))
         p = QPainter(self.core)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.strokePath(path, core)
@@ -263,8 +226,19 @@ class InkStroke:
         self._dirty = self._dirty.united(QRect(math.floor(r.left() / s), math.floor(r.top() / s),
                                                math.ceil(r.width() / s) + 2, math.ceil(r.height() / s) + 2))
 
+    def _device_rect(self, path):
+        d = self.core.devicePixelRatio()
+        r = path.boundingRect()
+        if self._last_highlight is not None:
+            r = r.united(self._last_highlight[0].boundingRect())
+        r = r.adjusted(-self.CORE_WIDTH - 2, -self.CORE_WIDTH - 2, self.CORE_WIDTH + 2, self.CORE_WIDTH + 2)
+        return QRect(math.floor(r.left() * d), math.floor(r.top() * d), math.ceil(r.width() * d) + 2,
+                     math.ceil(r.height() * d) + 2).intersected(self.core.rect())
+
     def _halo(self):
         if not self._dirty.isEmpty():
+            reach = self._kernel[0]
+            self._halo_dirty = self._halo_dirty.united(self._dirty.adjusted(-reach, -reach, reach, reach))
             blur_region(self.glow, self.halo, self._dirty, self._kernel)
             self._dirty = QRect()
         return self.halo
@@ -295,48 +269,42 @@ class InkStroke:
         blur_region(sharp, patch, band.translated(-region.topLeft()), self._kernel)
         return region, patch
 
-    def paint(self, p, clip, alpha=1.0, tip=True):
-        area = QRectF(clip).intersected(self.bounds)
-        if alpha <= 0.01 or area.isEmpty():
-            return
-        p.save()
-        p.setClipRect(area, Qt.ClipOperation.IntersectClip)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+    def tip_color(self):
         tail = self._tail()
+        return tail[1] if tail is not None else hue_at(self.length)
+
+    def uploads(self):
         halo = self._halo()
-        p.save()
-        p.setOpacity(min(1.0, self.GLOW_STRENGTH * alpha))
-        p.scale(self.GLOW_SCALE, self.GLOW_SCALE)
+        dirty = {"halo": self._halo_dirty, "core": self._core_dirty}
+        for layer, rect in self._transient:
+            dirty[layer] = dirty[layer].united(rect)
+        self._halo_dirty, self._core_dirty, self._transient = QRect(), QRect(), []
+        out = []
+        for layer, image in (("halo", halo), ("core", self.core)):
+            rect = dirty[layer].intersected(image.rect())
+            if not rect.isEmpty():
+                out.append((layer, rect.x(), rect.y(), image.copy(rect)))
+        tail = self._tail()
         if tail is None:
-            p.drawImage(0, 0, halo)
-        else:
-            region, patch = self._tail_halo(*tail)
-            p.save()
-            p.setClipRegion(QRegion(halo.rect()).subtracted(QRegion(region)), Qt.ClipOperation.IntersectClip)
-            p.drawImage(0, 0, halo)
-            p.restore()
-            p.drawImage(region.topLeft(), patch)
-        p.restore()
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        p.setOpacity(alpha)
+            return out
+        region, patch = self._tail_halo(*tail)
+        out.append(("halo", region.x(), region.y(), patch))
+        self._transient.append(("halo", region))
+        path, color, taper = tail
+        rect = self._device_rect(path)
+        if rect.isEmpty():
+            return out
+        patch = self.core.copy(rect)
         d = self.core.devicePixelRatio()
-        p.drawImage(area, self.core, QRectF(area.x() * d, area.y() * d, area.width() * d, area.height() * d))
-        color = hue_at(self.length)
-        if tail is not None:
-            path, color, taper = tail
-            core, highlight = self._pens(color, taper)
-            p.strokePath(path, core)
-            if self._last_highlight is not None:
-                p.strokePath(*self._last_highlight)
-            p.strokePath(path, highlight)
-        if tip:
-            g = QRadialGradient(self.cursor, self.TIP_RADIUS)
-            g.setColorAt(0.0, with_alpha(mix(color, QColor("white"), 0.35), 0.5 * alpha))
-            g.setColorAt(0.4, with_alpha(color, 0.22 * alpha))
-            g.setColorAt(1.0, with_alpha(color, 0.0))
-            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QBrush(g))
-            p.drawEllipse(self.cursor, self.TIP_RADIUS, self.TIP_RADIUS)
-        p.restore()
+        core, highlight = self._pens(color, taper)
+        p = QPainter(patch)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.translate(-rect.x() / d, -rect.y() / d)
+        p.strokePath(path, core)
+        if self._last_highlight is not None:
+            p.strokePath(*self._last_highlight)
+        p.strokePath(path, highlight)
+        p.end()
+        out.append(("core", rect.x(), rect.y(), patch))
+        self._transient.append(("core", rect))
+        return out

@@ -10,3 +10,4 @@ LANGUAGE = os.environ.get("CIRCLE_SEARCH_LANGUAGE", "")
 CURRENCY = os.environ.get("CIRCLE_SEARCH_CURRENCY", "")
 UNITS = os.environ.get("CIRCLE_SEARCH_UNITS", "").lower()
 HISTORY = os.environ.get("CIRCLE_SEARCH_HISTORY", "1") != "0"
+GPU = os.environ.get("CIRCLE_SEARCH_GPU", "auto").lower()

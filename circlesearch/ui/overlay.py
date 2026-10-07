@@ -6,21 +6,22 @@ import threading
 import time
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import (QBrush, QColor, QFontMetrics, QGuiApplication, QImage, QKeySequence, QLinearGradient,
-                         QPainter, QPainterPath, QPen, QPixmap, QShortcut)
+from PyQt6.QtGui import QColor, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QShortcut
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 from circlesearch.core import actions, history, settings
 from circlesearch.core.ocr import join_words
 from circlesearch.core.textindex import TextIndex
+from circlesearch.ui.backdrop import Renderer
 from circlesearch.ui.board import CardBoard, shadow_rect
-from circlesearch.ui.effects import InkStroke, aurora_image, draw_glyph, draw_loader, google_gradient, lightness_at
+from circlesearch.ui.effects import InkStroke, draw_glyph, draw_loader, lightness_at
 from circlesearch.ui.motion import (AMBIENT, MOTION, OUT_CUBIC, SPRING, SWEEP_EASE, WORD_SPRING, Animated, Tween,
                                     frame_timer, lerp, lerp_rect, mix, with_alpha)
 from circlesearch.ui.reader import TextReader, to_point, to_qrect, to_rect
 from circlesearch.ui.searchbar import SearchBar
-from circlesearch.ui.theme import (HIGHLIGHT_DARK, HIGHLIGHT_LIGHT, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SCRIM,
-                                   SURFACE, SURFACE_HIGH, font)
+from circlesearch.ui.theme import (HIGHLIGHT_DARK, HIGHLIGHT_LIGHT, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SURFACE,
+                                   SURFACE_HIGH, font)
 
 TAP_BAND = QSizeF(900, 96)
 TAP_DISTANCE = 6
@@ -45,7 +46,7 @@ def copy_text(text):
 SENSITIVE = ("jwt", "wifi", "otp")
 
 
-class Overlay(QWidget):
+class Overlay(QOpenGLWidget):
     closed = pyqtSignal()
     selecting = pyqtSignal(object)
     finished = pyqtSignal(object)
@@ -114,15 +115,15 @@ class Overlay(QWidget):
         self.shape_from = None
         self.shape_tween = None
         self.frame_tween = None
-        self._last_shape = None
         self.ghost = None
         self._snaps = []
         self._leaving = False
         self.bar_from = self.bar_to = None
         self.bar_tween = None
-        self._chip_rect = QRectF()
-        self._last_front = None
-        self._shadows = {}
+        self.gpu = None
+        self.ambient = AMBIENT
+        self._chip = None
+        self._word_batch = None
         self.ticker = frame_timer(self, self._tick)
 
         self.bar = SearchBar(self)
@@ -252,7 +253,6 @@ class Overlay(QWidget):
 
     def showEvent(self, event):
         self.intro = Tween(0.8)
-        self._last_front = self._sweep_front(0.0)
         self.chip.set(1.0)
         self.ticker.start()
         if not self._reading_screen:
@@ -288,46 +288,29 @@ class Overlay(QWidget):
             self._step_bar(now)
         self.board.step(now)
         if self.ghost is not None and self.ghost[1].done(now):
-            self.update(self.ghost[0].bounds.toAlignedRect())
             self.ghost = None
+            self.update()
         if self.exit is not None and self.exit.done(now):
             self.ticker.stop()
             self.close()
             return
-
-        springing = self.shape_tween is not None and not self.shape_tween.done(now)
-        shape = None
-        if springing and self.selection is not None:
-            shape = self._shape(now)[0].adjusted(-24, -24, 24, 24).toAlignedRect()
-        if self.exit is not None or self.scrim_selected.active(now):
-            self._last_shape = shape
+        if self._moving(now):
             self.update()
-            return
-        if shape is not None:
-            self.update(shape.united(self._last_shape) if self._last_shape is not None else shape)
-            self._last_shape = shape
-        elif self._last_shape is not None:
-            self.update(self._last_shape)
-            self._last_shape = None
-        if self._last_front is not None:
-            front = self._sweep_front(self.intro.value(now))
-            band = SWEEP_EDGE * 1.6
-            top = min(front, self._last_front) - max(band * 0.55, SWEEP_EDGE) - 80
-            bottom = max(front, self._last_front) + band * 0.45 + 80
-            self.update(QRect(0, int(top), self.width(), int(bottom - top) + 1))
-            self._last_front = front if not self.intro.done(now) else None
-        if AMBIENT or self.aurora.active(now):
-            self.update(QRect(0, self.height() - AURORA_HEIGHT, self.width(), AURORA_HEIGHT))
-        if self.chip.get(now) > 0.001 or self.chip.active(now):
-            if self._chip_rect.isEmpty():
-                self.update(QRect(0, 0, self.width(), 80))
-            else:
-                self.update(self._chip_rect.adjusted(-8, -20, 8, 8).toAlignedRect())
-        if self.selection is not None and (working or self._words_active(now) or
-                                           (self.frame_tween is not None and not self.frame_tween.done(now))):
-            self.update(self.selection.adjusted(-24, -24, 24, 24).toAlignedRect())
-        if self.ghost is not None:
-            self.update(self.ghost[0].bounds.toAlignedRect())
+
+    def _moving(self, now):
+        if self.ambient or self.exit is not None or self.ghost is not None or not self.intro.done(now):
+            return True
+        if any(a.active(now) for a in (self.aurora, self.chip, self.scrim_selected)):
+            return True
+        if self.chip.get(now) > 0.001 and self._chip_working():
+            return True
+        if self.selection is None:
+            return False
+        return self._words_active(now) or any(t is not None and not t.done(now)
+                                              for t in (self.shape_tween, self.frame_tween))
+
+    def _chip_working(self):
+        return self.reading or bool(self._pending and self._pending[0] == "tap")
 
     def _mean_lightness(self, rect):
         sx = self.thumb.width() / self.logical_size.width()
@@ -359,11 +342,11 @@ class Overlay(QWidget):
         effect = widget.graphicsEffect()
         opacity = effect.opacity() if effect is not None else 1.0
         widget.setGraphicsEffect(None)
-        pixmap = QPixmap(widget.size() * self.devicePixelRatioF())
-        pixmap.setDevicePixelRatio(self.devicePixelRatioF())
-        pixmap.fill(Qt.GlobalColor.transparent)
-        widget.render(pixmap, flags=QWidget.RenderFlag.DrawChildren)
-        self._snaps.append((pixmap, QRectF(widget.geometry()), opacity, radius))
+        image = QImage(widget.size() * self.devicePixelRatioF(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.setDevicePixelRatio(self.devicePixelRatioF())
+        image.fill(Qt.GlobalColor.transparent)
+        widget.render(image, flags=QWidget.RenderFlag.DrawChildren)
+        self._snaps.append((image, QRectF(widget.geometry()), opacity, radius))
         widget.hide()
 
     def dismiss(self):
@@ -691,106 +674,67 @@ class Overlay(QWidget):
         actions.search_image(self._crop_png())
         self.dismiss()
 
-    def paintEvent(self, e):
+    def initializeGL(self):
+        self.gpu = Renderer(self.shot)
+        self.ambient = AMBIENT and not self.gpu.lite
+
+    def paintGL(self):
         now = time.monotonic()
-        t = (now - self.t0) if AMBIENT else 0.0
+        t = (now - self.t0) if self.ambient else 0.0
         fade = 1.0 - (self.exit.value(now) if self.exit is not None else 0.0)
         intro = self.intro.value(now)
-
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.drawImage(0, 0, self.shot)
-
-        self._paint_scrim(p, now, intro, fade)
-        self._paint_aurora(p, now, t, intro, fade)
+        g = self.gpu
+        g.begin(self.width(), self.height(), self.devicePixelRatioF())
+        front = self._sweep_front(intro)
+        band = SWEEP_EDGE * 1.6
+        glow = self.aurora.get(now) * fade * min(1.0, intro * 1.6)
+        wave = (1.0 - intro) ** 0.7 * fade if intro < 1.0 else 0.0
+        g.background(shade=(self.scrim_top, self.scrim_bottom, SCRIM_SELECTED * self.scrim_selected.get(now), fade),
+                     sweep=(front, SWEEP_EDGE),
+                     hole=self._shape(now) if self.selection is not None else None,
+                     glow=(glow if glow > 0.01 else 0.0, t, self.height() - AURORA_HEIGHT, AURORA_HEIGHT),
+                     wave=(wave, t + 3.0, front - band * 0.55, band))
         if self.selection is not None:
-            self._paint_selection(p, now, t, fade)
+            self._paint_selection(g, now, t, fade)
         if self.ghost is not None:
             ink, tween = self.ghost
-            ink.paint(p, e.rect(), (1 - tween.value(now)) * fade, tip=False)
+            g.ink(ink, (1 - tween.value(now)) * fade, tip=False)
         if self.ink is not None:
-            self.ink.paint(p, e.rect())
+            g.ink(self.ink)
         for widget, radius in ((self.bar, SearchBar.HEIGHT / 2), *((c, c.radius()) for c in self.board.cards)):
             if widget is not None and widget.isVisible():
                 effect = widget.graphicsEffect()
-                self._paint_shadow(p, QRectF(widget.geometry()), effect.opacity() if effect is not None else 1.0, radius)
-        for pixmap, geometry, opacity, radius in self._snaps:
-            self._paint_shadow(p, geometry, opacity * fade, radius)
-            p.setOpacity(opacity * fade)
-            p.drawPixmap(geometry.topLeft(), pixmap)
-            p.setOpacity(1.0)
-        self._paint_chip(p, now, fade)
+                g.shadow(QRectF(widget.geometry()), effect.opacity() if effect is not None else 1.0, radius)
+        for image, geometry, opacity, radius in self._snaps:
+            g.shadow(geometry, opacity * fade, radius)
+            g.image(("snap", id(image)), image, geometry, opacity * fade)
+        self._paint_chip(g, now, fade)
+        g.end()
 
     def _sweep_front(self, intro):
         return lerp(self.height() + 60, -SWEEP_EDGE - 60, intro)
 
-    def _paint_scrim(self, p, now, intro, fade):
-        h = self.height()
-        front = self._sweep_front(intro)
-        extra = SCRIM_SELECTED * self.scrim_selected.get(now)
-        g = QLinearGradient(0, 0, 0, h)
-        steps = 24
-        for i in range(steps + 1):
-            y = h * i / steps
-            reveal = min(1.0, max(0.0, (y - front) / SWEEP_EDGE + 1.0))
-            reveal = reveal * reveal * (3 - 2 * reveal)
-            alpha = (lerp(self.scrim_top, self.scrim_bottom, i / steps) + extra) * reveal * fade
-            g.setColorAt(i / steps, with_alpha(SCRIM, alpha))
-        area = QPainterPath()
-        area.addRect(QRectF(self.rect()))
-        if self.selection is not None:
-            rect, radius = self._shape(now)
-            hole = QPainterPath()
-            hole.addRoundedRect(rect, radius, radius)
-            area = area.subtracted(hole)
-        p.fillPath(area, QBrush(g))
+    def _spin(self, now):
+        return (now - self.t0) * 160 if self.ambient else 0.0
 
-    def _paint_aurora(self, p, now, t, intro, fade):
-        w, h = self.width(), self.height()
-        p.save()
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
-        strength = self.aurora.get(now) * fade * min(1.0, intro * 1.6)
-        if strength > 0.01:
-            img = aurora_image(w, AURORA_HEIGHT, t, strength, anchor=1.15)
-            p.drawImage(QRectF(0, h - AURORA_HEIGHT, w, AURORA_HEIGHT), img)
-        if intro < 1.0:
-            band = SWEEP_EDGE * 1.6
-            wave = (1.0 - intro) ** 0.7 * fade
-            img = aurora_image(w, band, t + 3.0, wave, anchor=0.5, seed=2.0, feather=True)
-            p.drawImage(QRectF(0, self._sweep_front(intro) - band * 0.55, w, band), img)
-        p.restore()
-
-    def _paint_selection(self, p, now, t, fade):
+    def _paint_selection(self, g, now, t, fade):
         rect, radius = self._shape(now)
-        shape = QPainterPath()
-        shape.addRoundedRect(rect, radius, radius)
         if self.selected_words:
-            self._paint_words(p, now, rect, radius, fade)
+            self._paint_words(g, now, rect, radius, fade)
 
         if self.reading or self.frame_tween is None:
-            if AMBIENT:
-                p.save()
-                p.setClipPath(shape, Qt.ClipOperation.IntersectClip)
+            if self.ambient:
                 h = rect.height()
                 reach = 80 + h * h / 160
                 cycle = (t % SHIMMER_PERIOD) / SHIMMER_SWEEP
                 x = lerp(rect.left() - reach, rect.right() + reach,
                          SWEEP_EASE.valueForProgress(min(1.0, cycle)))
-                g = QLinearGradient(x - 80, rect.top(), x + 80, rect.bottom())
+                start, end = QPointF(x - 80, rect.top()), QPointF(x + 80, rect.bottom())
                 if self.selection_light:
-                    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
-                    peak = with_alpha(HIGHLIGHT_LIGHT, 0.9 * fade)
+                    g.shimmer(rect, radius, start, end, HIGHLIGHT_LIGHT, 0.9 * fade, True)
                 else:
-                    peak = with_alpha(QColor("white"), 0.16 * fade)
-                g.setColorAt(0.0, with_alpha(peak, 0.0))
-                g.setColorAt(0.5, peak)
-                g.setColorAt(1.0, with_alpha(peak, 0.0))
-                p.fillRect(rect, QBrush(g))
-                p.restore()
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.setPen(QPen(QBrush(google_gradient(rect.center(), (now - self.t0) * 160, fade)), 3.5))
-            p.drawPath(shape)
+                    g.shimmer(rect, radius, start, end, QColor("white"), 0.16 * fade, False)
+            g.border(rect, radius, 3.5, self._spin(now), fade)
             return
 
         u = self.frame_tween.raw(now)
@@ -803,76 +747,31 @@ class Overlay(QWidget):
         pen = min(5.0, max(2.5, min(r.width(), r.height()) / 12))
         s_end = min(rad + 26, r.width() * 0.4, r.height() * 0.4)
         s = lerp(max(r.width(), r.height()) / 2 + 8, s_end, k)
-        corners = QPainterPath()
-        corners.setFillRule(Qt.FillRule.WindingFill)
-        for x, y in ((r.left() - 8, r.top() - 8), (r.right() - s, r.top() - 8),
-                     (r.left() - 8, r.bottom() - s), (r.right() - s, r.bottom() - s)):
-            corners.addRect(QRectF(x, y, s + 8, s + 8))
-        p.save()
-        p.setClipPath(corners, Qt.ClipOperation.IntersectClip)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        if white < 1.0:
-            p.setPen(QPen(QBrush(google_gradient(rect.center(), (now - self.t0) * 160, (1 - white) * fade)),
-                          lerp(3.5, pen, k)))
-            p.drawRoundedRect(r, rad, rad)
-        a = white * fade
-        if a > 0.01:
-            p.setPen(QPen(with_alpha(QColor("black"), 0.30 * a), pen + 4))
-            p.drawRoundedRect(r, rad, rad)
-            p.setPen(QPen(with_alpha(QColor("white"), a), pen))
-            p.drawRoundedRect(r, rad, rad)
-        p.restore()
+        g.frame(r, rad, s, lerp(3.5, pen, k), pen, white, fade, self._spin(now), rect.center())
 
-    def _paint_words(self, p, now, rect, radius, fade):
-        grown = QPainterPath()
-        grown.addRoundedRect(rect.adjusted(-10, -10, 10, 10), radius + 10, radius + 10)
-        p.save()
-        p.setClipPath(grown, Qt.ClipOperation.IntersectClip)
-        p.setPen(Qt.PenStyle.NoPen)
-        for i, w in enumerate(self.selected_words):
-            u = self._word_progress(i, now)
-            if u <= 0.0:
-                continue
-            a = min(1.0, u * 2.5) * fade
-            r = to_qrect(w.rect).adjusted(-3, -2, 3, 2)
-            r.setWidth(r.width() * WORD_SPRING.valueForProgress(u))
-            if self._word_is_light(w):
-                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
-                p.setBrush(mix(QColor("white"), HIGHLIGHT_LIGHT, a))
-            else:
-                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
-                p.setBrush(mix(QColor("black"), HIGHLIGHT_DARK, a))
-            p.drawRoundedRect(r, 6, 6)
-        p.restore()
+    def _paint_words(self, g, now, rect, radius, fade):
+        key = (self.words_t0, len(self.selected_words), rect.getRect(), radius, fade)
+        if self._word_batch is None or self._word_batch[0] != key or self._words_active(now):
+            light, dark = [], []
+            for i, w in enumerate(self.selected_words):
+                u = self._word_progress(i, now)
+                if u <= 0.0:
+                    continue
+                a = min(1.0, u * 2.5) * fade
+                r = to_qrect(w.rect).adjusted(-3, -2, 3, 2)
+                r.setWidth(r.width() * WORD_SPRING.valueForProgress(u))
+                if self._word_is_light(w):
+                    light.append((r, mix(QColor("white"), HIGHLIGHT_LIGHT, a)))
+                else:
+                    dark.append((r, mix(QColor("black"), HIGHLIGHT_DARK, a)))
+            self._word_batch = (key, g.word_batch(light, dark))
+        g.words(self._word_batch[1], rect.adjusted(-10, -10, 10, 10), radius + 10)
 
-    def _paint_shadow(self, p, geometry, opacity, radius=None):
-        size = geometry.size().toSize()
-        radius = size.height() / 2 if radius is None else radius
-        key = (size.width(), size.height(), radius)
-        if key not in self._shadows:
-            pad, s = 48, 12
-            img = QImage((size.width() + 2 * pad) // s, (size.height() + 2 * pad) // s,
-                         QImage.Format.Format_ARGB32_Premultiplied)
-            img.fill(0)
-            sp = QPainter(img)
-            sp.setRenderHint(QPainter.RenderHint.Antialiasing)
-            sp.scale(1 / s, 1 / s)
-            sp.setPen(Qt.PenStyle.NoPen)
-            sp.setBrush(QColor(0, 0, 0, 170))
-            sp.drawRoundedRect(QRectF(pad + 8, pad + 14, size.width() - 16, size.height()), radius, radius)
-            sp.end()
-            if len(self._shadows) > 8:
-                self._shadows.clear()
-            self._shadows[key] = img
-        p.setOpacity(opacity)
-        p.drawImage(geometry.adjusted(-48, -48, 48, 48), self._shadows[key])
-        p.setOpacity(1.0)
-
-    def _paint_chip(self, p, now, fade):
+    def _paint_chip(self, g, now, fade):
         a = max(0.0, self.chip.get(now)) * fade
         if a <= 0.01:
             return
-        working = self.reading or bool(self._pending and self._pending[0] == "tap")
+        working = self._chip_working()
         text = self.status or "Circle, tap or type to search"
         label_font = font(15, 480)
         fm = QFontMetrics(label_font)
@@ -883,29 +782,37 @@ class Overlay(QWidget):
         tw = fm.horizontalAdvance(text)
         h = 46
         w = 18 + 20 + 12 + tw + (14 + kw if show_key else 0) + 16
-        y = lerp(4, 26, min(1.0, a))
-        box = QRectF((self.width() - w) / 2, y, w, h)
-        self._chip_rect = QRectF((self.width() - w) / 2, 4, w, 26 + h)
-
-        p.save()
-        p.setOpacity(min(1.0, a))
-        p.setPen(QPen(QColor(255, 255, 255, 16), 1))
-        p.setBrush(with_alpha(SURFACE, 0.94))
-        p.drawRoundedRect(box, h / 2, h / 2)
-        icon = QPointF(box.left() + 28, box.center().y())
-        if working:
-            draw_loader(p, icon, now - self.t0, PRIMARY, radius=10)
-        else:
-            draw_glyph(p, icon)
-        p.setFont(label_font)
-        p.setPen(ON_SURFACE)
-        p.drawText(QRectF(box.left() + 50, box.top(), tw + 2, h), Qt.AlignmentFlag.AlignVCenter, text)
-        if show_key:
-            key = QRectF(box.right() - 16 - kw, box.center().y() - 12, kw, 24)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(SURFACE_HIGH)
-            p.drawRoundedRect(key, 8, 8)
-            p.setFont(key_font)
-            p.setPen(ON_SURFACE_VARIANT)
-            p.drawText(key, Qt.AlignmentFlag.AlignCenter, "Esc")
-        p.restore()
+        box = QRectF((self.width() - w) / 2, lerp(4, 26, min(1.0, a)), w, h)
+        key = (text, show_key, working and now)
+        fresh = self._chip is None or self._chip[0] != key
+        if fresh:
+            dpr = self.devicePixelRatioF()
+            image = QImage(round((w + 2) * dpr), round((h + 2) * dpr), QImage.Format.Format_ARGB32_Premultiplied)
+            image.setDevicePixelRatio(dpr)
+            image.fill(Qt.GlobalColor.transparent)
+            p = QPainter(image)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.translate(1, 1)
+            local = QRectF(0, 0, w, h)
+            p.setPen(QPen(QColor(255, 255, 255, 16), 1))
+            p.setBrush(with_alpha(SURFACE, 0.94))
+            p.drawRoundedRect(local, h / 2, h / 2)
+            icon = QPointF(28, h / 2)
+            if working:
+                draw_loader(p, icon, now - self.t0, PRIMARY, radius=10)
+            else:
+                draw_glyph(p, icon)
+            p.setFont(label_font)
+            p.setPen(ON_SURFACE)
+            p.drawText(QRectF(50, 0, tw + 2, h), Qt.AlignmentFlag.AlignVCenter, text)
+            if show_key:
+                k = QRectF(w - 16 - kw, h / 2 - 12, kw, 24)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(SURFACE_HIGH)
+                p.drawRoundedRect(k, 8, 8)
+                p.setFont(key_font)
+                p.setPen(ON_SURFACE_VARIANT)
+                p.drawText(k, Qt.AlignmentFlag.AlignCenter, "Esc")
+            p.end()
+            self._chip = (key, image)
+        g.image("chip", self._chip[1], box.adjusted(-1, -1, 1, 1), min(1.0, a), reload=fresh)

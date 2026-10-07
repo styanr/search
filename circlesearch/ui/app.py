@@ -3,8 +3,8 @@ import os
 import sys
 import tempfile
 
-from PyQt6.QtCore import QLockFile, QObject, QRect, QTimer
-from PyQt6.QtGui import QCursor
+from PyQt6.QtCore import QCoreApplication, QLockFile, QObject, QRect, Qt, QTimer
+from PyQt6.QtGui import QCursor, QSurfaceFormat
 from PyQt6.QtWidgets import QApplication
 
 from circlesearch.core import locale
@@ -104,12 +104,23 @@ def main():
         return 0
 
     capture = Capture()
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    surface = QSurfaceFormat.defaultFormat()
+    surface.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
+    surface.setDepthBufferSize(0)
+    surface.setStencilBufferSize(0)
+    QSurfaceFormat.setDefaultFormat(surface)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("circle-search")
     app.setDesktopFileName("circle-search")
     locale.install(QtLocale.detect())
 
+    from circlesearch.ui import backdrop
+    error = backdrop.prepare()
+    if error:
+        print(error, file=sys.stderr)
+        return 1
     from circlesearch.ui.overlay import Overlay
     from circlesearch.ui.theme import load_fonts
     load_fonts()

@@ -194,6 +194,7 @@ CIRCLE_SEARCH_OCR_LANGUAGES=jpn+ell
 | `CIRCLE_SEARCH_CARDS` | `1` | Set to `0` to turn off cards. |
 | `CIRCLE_SEARCH_DEBUG` | `0` | Set to `1` to save each screenshot and OCR result to `~/.cache/circle-search/debug/`. |
 | `CIRCLE_SEARCH_ROUTER` | `local` | Which router decides the kind of selection. Only `local` is built in. |
+| `CIRCLE_SEARCH_GPU` | `auto` | Set to `lite` to stop the glow and shimmer from animating. This is automatic with software OpenGL (llvmpipe). |
 | `CIRCLE_SEARCH_HISTORY` | `1` | Set to `0` to stop saving recent selections and searches to `~/.local/share/circle-search/history.jsonl`. |
 
 The app reads your language, currency and units from the KDE regional settings (`LC_ADDRESS`, `LC_MONETARY`, `LC_MEASUREMENT`). The card text is in English.
