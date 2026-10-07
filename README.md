@@ -166,8 +166,9 @@ The portal saves the screenshot as a file. The app reads the file and deletes it
 | Ctrl+Enter | Search the selected area with Google Lens |
 | Ctrl+C | Copy the text |
 | Ctrl+P | Pin the selected area to the screen |
-| Type | Search for what you type |
-| Down | Recent selections and searches |
+| Type | Search for what you type. Recent selections and searches show up as suggestions |
+| Down | Show recent selections and searches |
+| Shift+Delete | Remove the highlighted suggestion |
 | Right-click | Clear the selection |
 | Esc | Close |
 
@@ -202,7 +203,7 @@ languages = ["eng", "jpn"]
 | `locale.units` | from your regional settings | `"metric"` or `"imperial"`. |
 | `ocr.languages` | English and your region's language | Languages to read (`["eng", "jpn"]`). Each one needs its Tesseract language pack. Each language makes OCR slower. |
 
-If the file has a mistake, the app says so on standard error and uses the default for that setting. Older versions read `CIRCLE_SEARCH_*` environment variables; those are no longer read.
+If the file has a mistake, the app says so on standard error and uses the default for that setting.
 
 The app reads your language, currency and units from the KDE regional settings (`LC_ADDRESS`, `LC_MONETARY`, `LC_MEASUREMENT`). The card text is in English.
 

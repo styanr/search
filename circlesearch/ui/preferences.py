@@ -95,6 +95,7 @@ class Field(QLineEdit):
 
     def focusInEvent(self, e):
         super().focusInEvent(e)
+        self.panel.focus_name = self.key
         self.panel.refresh()
 
     def focusOutEvent(self, e):
@@ -134,7 +135,7 @@ class SettingsView(CardView):
     def state_key(self):
         w = self.w
         return (self.scroll, repr(w.values), w.focused(), w.contact.text(), w.note(), w.picking, w.search.text(),
-                w.active, w.first, w.saved, w.cleared is not None)
+                w.active, w.first, w.saved, w.cleared is not None, w.focus_name, w.ring)
 
     def wheel(self, delta, pos):
         w = self.w
@@ -166,7 +167,24 @@ class SettingsView(CardView):
                 cy = group(p, targets, self.PAD + i * (colw + 12), cy, colw) + 20
             bottom = max(bottom, cy)
         self.content = self.footer_row(p, targets, bottom - 6) + self.scroll
+        if p:
+            self.focus_ring(p, targets)
         return min(self.content, w.max_height)
+
+    def focus_ring(self, p, targets):
+        w = self.w
+        name = w.focus_name
+        if not w.ring or name not in targets or name == w.picking_target():
+            return
+        r = targets[name][0]
+        radius = (r.width() / 2 if name == "close" else 18 if name == "clear" else T.RADIUS["chip"]
+                  if name.startswith("ocr:") else FIELD_H / 2 if name.startswith("units:")
+                  else 6 if name == "file" else 12)
+        p.save()
+        p.setPen(QPen(self.c["primary"], 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r.adjusted(-3, -3, 3, 3), radius + 3, radius + 3)
+        p.restore()
 
     def title(self, p, targets, y):
         h, _ = self.text(p, "Settings", self.PAD, y, self.inner - 48, "headline")
@@ -537,6 +555,8 @@ class SettingsPanel(CardWidget):
         self.active = self.first = 0
         self.saved = len(history.load())
         self.cleared = None
+        self.focus_name = None
+        self.ring = False
         self.software = backdrop.LITE and not self.launch["reduce"]
         self.card = Card(title="Settings")
         self.view = SettingsView(self, self.card, {})
@@ -544,6 +564,8 @@ class SettingsPanel(CardWidget):
         self.contact = Field(self, "contact")
         self.search = plain(QLineEdit(self))
         self.search.hide()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.contact.installEventFilter(self)
         self.search.installEventFilter(self)
         self.search.textEdited.connect(self._searched)
         self.relayout()
@@ -612,12 +634,17 @@ class SettingsPanel(CardWidget):
         self.search.setFocus()
         self.relayout()
 
+    def picking_target(self):
+        return f"pick:{self.picking}" if self.picking else None
+
     def close_picker(self):
         if self.picking is None:
             return
+        if self.search.hasFocus():
+            self.focus_name = self.picking_target()
+            self.setFocus()
         self.picking = None
         self.search.hide()
-        self.search.clearFocus()
         self.relayout()
 
     def pick(self, value):
@@ -645,8 +672,87 @@ class SettingsPanel(CardWidget):
         self.active = self.first = 0
         self.relayout()
 
+    def order(self):
+        names = [n for n in self._targets if not n.startswith("choose:")]
+        names.insert(names.index("file") if "file" in names else len(names), "contact")
+        return names
+
+    def navigate(self, step):
+        names = self.order()
+        if self.focus_name in names:
+            name = names[(names.index(self.focus_name) + step) % len(names)]
+        else:
+            name = names[0 if step > 0 else -1]
+        self.focus_on(name, True)
+
+    def focus_on(self, name, ring):
+        self.focus_name, self.ring = name, ring
+        if name == "contact":
+            self.contact.setFocus()
+            self.contact.selectAll()
+        elif not self.hasFocus():
+            self.setFocus()
+        self.reveal(name)
+        self.refresh()
+
+    def reveal(self, name):
+        rect = self._targets.get(name, (None,))[0] if name != "contact" else self.view.fields.get("contact", (None,))[0]
+        limit = max(0.0, self.view.content - self.height())
+        if rect is None or limit <= 0:
+            return
+        shift = min(0.0, rect.top() - 12) or max(0.0, rect.bottom() + 12 - self.height())
+        scroll = min(limit, max(0.0, self.view.scroll + shift))
+        if scroll != self.view.scroll:
+            self.view.scroll = scroll
+            self.relayout()
+
+    def sibling(self, step):
+        prefix = self.focus_name.partition(":")[0] + ":" if self.focus_name else None
+        if prefix not in ("units:", "ocr:"):
+            return
+        names = [n for n in self._targets if n.startswith(prefix)]
+        i = names.index(self.focus_name) + step
+        if 0 <= i < len(names):
+            self.focus_on(names[i], True)
+
+    def activate(self):
+        entry = self._targets.get(self.focus_name)
+        if entry is None:
+            return
+        self.firing = self.focus_name
+        try:
+            entry[1]()
+        finally:
+            self.firing = None
+
+    def event(self, e):
+        if e.type() == QEvent.Type.KeyPress and e.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            self.navigate(-1 if e.key() == Qt.Key.Key_Backtab or e.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                          else 1)
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, e):
+        key = e.key()
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            self.sibling(1 if key == Qt.Key.Key_Right else -1)
+        elif key in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter) and not e.isAutoRepeat():
+            if self.focus_name is not None:
+                self.ring = True
+                self.activate()
+        else:
+            return super().keyPressEvent(e)
+        e.accept()
+
     def eventFilter(self, obj, e):
+        if obj is self.contact and e.type() == QEvent.Type.KeyPress and e.key() in (Qt.Key.Key_Tab,
+                                                                                    Qt.Key.Key_Backtab):
+            self.navigate(-1 if e.key() == Qt.Key.Key_Backtab else 1)
+            return True
         if obj is self.search and self.picking:
+            if e.type() == QEvent.Type.KeyPress and e.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+                self.close_picker()
+                return True
             if e.type() == QEvent.Type.ShortcutOverride and e.key() == Qt.Key.Key_Escape:
                 e.accept()
                 return True
@@ -668,6 +774,10 @@ class SettingsPanel(CardWidget):
     def mousePressEvent(self, e):
         if self.picking and not self.view.picker_area.contains(e.position()):
             self.close_picker()
+        name = self._target_at(e.position())
+        self.ring = False
+        if name is not None and not name.startswith("choose:"):
+            self.focus_name = name
         super().mousePressEvent(e)
 
     def clear_history(self):
@@ -719,6 +829,7 @@ class SettingsPanel(CardWidget):
     def reset(self):
         self.close_picker()
         self.cleared = None
+        self.focus_name, self.ring = None, False
         self.saved = len(history.load())
         if self.view.scroll:
             self.view.scroll = 0.0

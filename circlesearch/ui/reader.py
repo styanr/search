@@ -27,7 +27,6 @@ def to_point(p):
 
 
 class TextReader(QObject):
-    screen_read = pyqtSignal(list)
     region_read = pyqtSignal(int, object, list)
     image_read = pyqtSignal(int, list, list)
 
@@ -45,7 +44,7 @@ class TextReader(QObject):
         self._pass_id += 1
         return self._pass_id
 
-    def _read(self, image, offset, pass_id, background=False):
+    def _read(self, image, offset, pass_id):
         factor = max(1, round(OCR_SCALE / self.dpr))
         big = image if factor == 1 else image.scaled(image.size() * factor, Qt.AspectRatioMode.IgnoreAspectRatio,
                                                      Qt.TransformationMode.SmoothTransformation)
@@ -53,22 +52,17 @@ class TextReader(QObject):
         fd, path = tempfile.mkstemp(suffix=".bmp", dir="/dev/shm" if os.path.isdir("/dev/shm") else None)
         os.close(fd)
         try:
-            words = ocr.read(path, scale, offset, pass_id, background, self.debug_dir) if big.save(path, "BMP") else []
+            words = ocr.read(path, scale, offset, pass_id, debug_dir=self.debug_dir) if big.save(path, "BMP") else []
         finally:
             os.unlink(path)
         if self.debug_dir:
             image.save(os.path.join(self.debug_dir, f"ocr-{pass_id:02d}.png"))
         return words
 
-    def read_screen(self):
-        shot, pass_id = self.shot.copy(), self._next_pass()
-
-        def work():
-            if self.debug_dir:
-                shot.save(os.path.join(self.debug_dir, "screenshot.png"))
-            self.screen_read.emit(self._read(shot, Point(0, 0), pass_id, background=True))
-
-        threading.Thread(target=work, daemon=True).start()
+    def save_screenshot(self):
+        if self.debug_dir:
+            shot = self.shot.copy()
+            threading.Thread(target=lambda: shot.save(os.path.join(self.debug_dir, "screenshot.png")), daemon=True).start()
 
     def read_region(self, area, bounds):
         self._token += 1

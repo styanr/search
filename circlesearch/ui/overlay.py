@@ -92,6 +92,7 @@ class Overlay(QWidget):
         self.selection = None
         self.selected_words = []
         self.index = TextIndex()
+        self.index.set_screen([])
         self.reading = False
         self.refining = False
         self._pending = None
@@ -101,17 +102,15 @@ class Overlay(QWidget):
             self.debug_dir = os.path.join(settings.CACHE_DIR, "debug", time.strftime("%Y%m%d-%H%M%S"))
             os.makedirs(self.debug_dir, exist_ok=True)
         self.reader = TextReader(self.shot, self.dpr, self.debug_dir, self)
-        self.reader.screen_read.connect(self._ocr_done)
         self.reader.region_read.connect(self._region_done)
         self.reader.image_read.connect(self._image_done)
-        self._reading_screen = False
+        self._started = False
         self._scan = None
         self.code_route = None
         self.colors = []
         self._logged = []
         self._pinned = None
         self.typed = False
-        self.ocr_gate = None
         self.board = CardBoard(self, self._card_copy, self._card_open, self._card_pin, self._card_save, self._card_run,
                                self._card_arrived)
 
@@ -251,31 +250,12 @@ class Overlay(QWidget):
         if self.index.ready and not self.reading and not self.selected_words:
             self._request_cards("", [])
 
-    def _start_ocr(self):
-        if not self.reader.available():
-            self.index.set_screen([])
-            if self.ocr_gate is not None:
-                self.ocr_gate(self)
-            return
-        self.reader.read_screen()
-
     def _read_region(self, area, purpose):
         if not self.reader.available():
             return None
         token = self.reader.read_region(area, QRectF(self.rect()))
         self._pending = (purpose, token) if purpose == "select" else (purpose, token, area.center())
         return token
-
-    def _ocr_done(self, words):
-        self.index.set_screen(words)
-        if self.ocr_gate is not None:
-            self.ocr_gate(self)
-        if self.selection is not None and self.reading:
-            self.reading = False
-            self._apply_selection_words(provisional=True)
-        elif self._pending and self._pending[0] == "tap" and self.index.word_at(to_point(self._pending[2])):
-            pos, self._pending = self._pending[2], None
-            self._select_word_at(pos)
 
     def _region_done(self, token, area, words):
         self.index.add_region(area, words)
@@ -315,10 +295,10 @@ class Overlay(QWidget):
         self.chip.set(1.0)
         self.gear_shown.set(1.0)
         self.ticker.start()
-        if not self._reading_screen:
-            self._reading_screen = True
-            if self.ocr_gate is None:
-                QTimer.singleShot(30, self._start_ocr)
+        if not self._started:
+            self._started = True
+            QTimer.singleShot(0, self.bar._update_fade)
+            self.reader.save_screenshot()
             if settings.CARDS:
                 threading.Thread(target=self._load_cards, daemon=True).start()
 
@@ -491,6 +471,7 @@ class Overlay(QWidget):
         panel.show()
         panel.raise_()
         self.prefs = panel
+        panel.setFocus()
         self.prefs_anim = (start, target, Tween(0.5, CARD_SPRING), False)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
@@ -806,16 +787,15 @@ class Overlay(QWidget):
         self._finish_selection()
 
     def _finish_selection(self):
-        covered = self.index.covered(to_rect(self.selection))
-        if not covered:
-            self._read_region(self.selection, "select")
+        area = to_rect(self.selection)
+        token = None if self.index.covered(area) else self._read_region(self.selection, "select")
         self.status = ""
-        if not self.index.ready:
+        if token is not None and not self.index.words_in(area):
             self.reading = True
             self._show_bar("", False, reading=True)
             return
         self.reading = False
-        self._apply_selection_words(provisional=not covered)
+        self._apply_selection_words(provisional=token is not None)
 
     def _prefers_text(self, words):
         sel = self.selection
