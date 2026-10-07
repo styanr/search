@@ -39,6 +39,7 @@ FRAME_SETTLE = 0.5
 LIFT_GROW, LIFT_MAX = 10, 0.04
 FLOW = 240
 PEN_SPEED = 1600
+INK_LIGHT = 0.45
 MORPH = 0.34
 MORPH_EASE = SpringCurve(0.9, 300.0, MORPH)
 
@@ -921,7 +922,7 @@ class Overlay(QWidget):
                      glow=(glow if glow > 0.01 else 0.0, self._phase, self.height() - AURORA_HEIGHT, AURORA_HEIGHT),
                      wave=(wave, t + 3.0, front - band * 0.55, band),
                      pen=(self._pen_x or 0.0, self.energy, self._near),
-                     activity=(self._busy, *self._bounce_at(now)))
+                     activity=(self._busy, *self._bounce_at(now)), light=self._light(now))
         if self.selection is not None:
             self._paint_selection(g, now, t, fade)
         if self.morph is not None:
@@ -929,7 +930,7 @@ class Overlay(QWidget):
             g.ink(ink, fade, flow, spin, tip=False, line=line, goals=goals, morph=tween.value(now),
                   shine=self._shine(tween.raw(now)))
         if self.ink is not None:
-            g.ink(self.ink, 1.0, flow, spin)
+            g.ink(self.ink, 1.0, flow, spin, light=True)
         self._paint_chip(g, now, fade)
         g.end()
 
@@ -954,6 +955,13 @@ class Overlay(QWidget):
 
     def _appear(self, now):
         return 1.0 if self.morph is None or self.morph[3].done(now) else 0.0
+
+    def _light(self, now):
+        if self.ink is not None:
+            return INK_LIGHT, self.ink
+        if self.morph is not None:
+            return INK_LIGHT * self._shine(self.morph[3].raw(now)), self.morph[0]
+        return None
 
     def _opening(self, now):
         return 1.0 if self.morph is None else self.morph[3].value(now)

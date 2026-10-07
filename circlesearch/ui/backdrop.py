@@ -13,8 +13,10 @@ from circlesearch.ui.theme import GOOGLE, SCRIM
 TEXTURE_2D, MIN_FILTER, MAG_FILTER, LINEAR = 0x0DE1, 0x2801, 0x2800, 0x2601
 BLEND, SCISSOR_TEST, DEPTH_TEST = 0x0BE2, 0x0C11, 0x0B71
 ZERO, ONE, ONE_MINUS_SRC_ALPHA, DST_COLOR, ONE_MINUS_DST_COLOR = 0, 1, 0x0303, 0x0306, 0x0307
-TRIANGLES, FLOAT, COLOR_BUFFER_BIT, RENDERER = 0x0004, 0x1406, 0x4000, 0x1F01
+TRIANGLES, FLOAT, COLOR_BUFFER_BIT, DEPTH_BUFFER_BIT, RENDERER = 0x0004, 0x1406, 0x4000, 0x0100, 0x1F01
+LESS, LEQUAL = 0x0201, 0x0203
 FUNC_ADD, MAX = 0x8006, 0x8008
+TEXTURE0, TEXTURE1 = 0x84C0, 0x84C1
 
 OVER, SCREEN, MULTIPLY = (ONE, ONE_MINUS_SRC_ALPHA), (ONE_MINUS_DST_COLOR, ONE), (DST_COLOR, ZERO)
 SHIMMER, BORDER, FRAME, TIP = 1, 2, 3, 5
@@ -67,6 +69,8 @@ uniform vec4 glow;
 uniform vec4 wave;
 uniform vec3 pen;
 uniform vec3 activity;
+uniform sampler2D halo;
+uniform float light;
 uniform vec3 hues[4];
 float hash(vec2 q) { return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
 float noise(vec2 q) {
@@ -105,7 +109,14 @@ void main() {
     float reveal = clamp((p.y - sweep.x) / sweep.y + 1.0, 0.0, 1.0);
     reveal = reveal * reveal * (3.0 - 2.0 * reveal);
     float a = (mix(shade.x, shade.y, p.y / view.y) + shade.z) * reveal * shade.w;
+    vec4 lit = vec4(0.0);
+    if (light > 0.0) {
+        lit = texture2D(halo, vec2(p.x / view.x, 1.0 - p.y / view.y));
+        lit *= min(1.0, 2.5 * lit.a) / max(lit.a, 0.0001);
+        a *= 1.0 - 0.5 * light * lit.a;
+    }
     vec3 c = mix(base, scrim, a);
+    c = c + lit.rgb * 0.65 * light - c * lit.rgb * 0.65 * light;
     if (hole.z > 0.0) {
         vec3 inner = base;
         if (lift > 0.0) {
@@ -224,6 +235,8 @@ uniform float morph;
 uniform float shine;
 uniform float flow;
 uniform float spin;
+uniform float span;
+uniform int stage;
 uniform vec3 hues[4];
 varying vec4 seg;
 varying vec4 data;
@@ -244,7 +257,14 @@ void main() {
     float y = fract((mix(data.z, data.w, h) - spin) / 360.0) * 4.0;
     float d = mod(y - x + 2.0, 4.0) - 2.0;
     vec3 c = mix(band(x + d * m), band(x + (d - sign(d) * 4.0) * m), 0.5 * smoothstep(1.4, 2.0, abs(d)));
-    if (mode == 1) c = mix(c, vec3(1.0), 0.8);
+    if (stage == 1 && k < 0.999) discard;
+    if (stage == 2 && (k >= 0.999 || k <= 0.0)) discard;
+    float depth = 1.0 - 0.99 * clamp(s / span, 0.0, 1.0);
+    gl_FragDepth = depth - (stage >= 2 ? 0.99 * 14.0 / span : 0.0);
+    if (mode == 1) {
+        c = mix(c, vec3(1.0), 0.8);
+        k *= shine;
+    }
     gl_FragColor = vec4(c * k, k);
 }
 """
@@ -351,8 +371,9 @@ class Texture:
 
 
 class Layer:
-    def __init__(self, gl, size):
-        self.fbo = QOpenGLFramebufferObject(size)
+    def __init__(self, gl, size, depth=False):
+        self.fbo = (QOpenGLFramebufferObject(size, QOpenGLFramebufferObject.Attachment.Depth) if depth
+                    else QOpenGLFramebufferObject(size))
         self.size, self.id = QSize(size), self.fbo.texture()
         gl.glBindTexture(TEXTURE_2D, self.id)
         gl.glTexParameteri(TEXTURE_2D, MIN_FILTER, LINEAR)
@@ -373,6 +394,7 @@ class Renderer:
         self._cache = {}
         self._layers = None
         self._strokes = {}
+        self._light_owner = None
         reach, weights = gaussian(InkStroke.GLOW_SIGMA)
         self._weights = weights[reach:reach + 10]
         self._used = set()
@@ -434,7 +456,7 @@ class Renderer:
     def _full(self):
         return QRectF(0, 0, *self.view)
 
-    def background(self, shade, sweep, hole, glow, wave, lift=None, pen=None, activity=(0.0, 0.0, 0.0)):
+    def background(self, shade, sweep, hole, glow, wave, lift=None, pen=None, activity=(0.0, 0.0, 0.0), light=None):
         program = self._use("background", (ONE, ZERO))
         self.gl.glBindTexture(TEXTURE_2D, self.shot.id)
         program.setUniformValue("shot", 0)
@@ -453,6 +475,15 @@ class Renderer:
         x, energy, near = pen if pen is not None else (0.0, 0.0, 0.0)
         program.setUniformValue("pen", float(x), float(energy), float(near))
         program.setUniformValue("activity", *map(float, activity))
+        strength, owner = light if light is not None else (0.0, None)
+        if strength > 0.0 and owner is not None and owner is self._light_owner:
+            self.gl.glActiveTexture(TEXTURE1)
+            self.gl.glBindTexture(TEXTURE_2D, self._layers[3].id)
+            self.gl.glActiveTexture(TEXTURE0)
+        else:
+            strength = 0.0
+        program.setUniformValue("halo", 1)
+        program.setUniformValue("light", float(strength))
         self._hues(program)
         self._draw(program, array("f", self._quad(self._full())), (("pos", 2), ("uv", 2)))
 
@@ -533,12 +564,15 @@ class Renderer:
     def _ink_layers(self):
         full = self.device
         half = QSize((full.width() + 1) // 2, (full.height() + 1) // 2)
+        eighth = QSize((full.width() + 7) // 8, (full.height() + 7) // 8)
         if self._layers is None or self._layers[0].size != full:
-            self._layers = [Layer(self.gl, full), Layer(self.gl, full), Layer(self.gl, half), Layer(self.gl, half)]
+            self._layers = [Layer(self.gl, full, depth=True), Layer(self.gl, half), Layer(self.gl, half),
+                            Layer(self.gl, eighth), Layer(self.gl, eighth)]
+            self._light_owner = None
             for layer in self._layers:
                 layer.fbo.bind()
                 self.gl.glClearColor(0.0, 0.0, 0.0, 0.0)
-                self.gl.glClear(COLOR_BUFFER_BIT)
+                self.gl.glClear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
         return self._layers
 
     def _scissor(self, layer, area, scale):
@@ -547,14 +581,14 @@ class Renderer:
         x1, y1 = min(w, int(area.right() * scale) + 2), min(h, int(area.bottom() * scale) + 2)
         self.gl.glScissor(x0, h - y1, max(0, x1 - x0), max(0, y1 - y0))
 
-    def _into(self, layer, area, scale, margin=0.0):
+    def _into(self, layer, area, scale, margin=0.0, depth=False):
         layer.fbo.bind()
         gl = self.gl
         gl.glViewport(0, 0, layer.size.width(), layer.size.height())
         gl.glEnable(SCISSOR_TEST)
         self._scissor(layer, area.adjusted(-margin, -margin, margin, margin), scale)
         gl.glClearColor(0.0, 0.0, 0.0, 0.0)
-        gl.glClear(COLOR_BUFFER_BIT)
+        gl.glClear(COLOR_BUFFER_BIT | (DEPTH_BUFFER_BIT if depth else 0))
         self._scissor(layer, area, scale)
 
     def _flipped(self, area):
@@ -594,7 +628,7 @@ class Renderer:
                            (x0, y1, u0, v1), (x1, y0, u1, v0), (x1, y1, u1, v1)):
             data.extend((x, y, u, v, *tail))
 
-    def ink(self, stroke, alpha, flow, spin, tip=True, line=None, goals=None, morph=0.0, shine=1.0):
+    def ink(self, stroke, alpha, flow, spin, tip=True, line=None, goals=None, morph=0.0, shine=1.0, light=False):
         data = self._ink_data(stroke, line or stroke.line, goals)
         area = stroke.bounds
         if goals:
@@ -607,43 +641,72 @@ class Renderer:
             return
         gl = self.gl
         raw = data.tobytes()
-        core, highlight, glow, spare = self._ink_layers()
-        passes = ((core, 0, stroke.CORE_WIDTH, 3.5, 1.0), (highlight, 1, stroke.HIGHLIGHT_WIDTH, 0.0, 1.0),
-                  (glow, 2, stroke.GLOW_WIDTH, 8.0, 0.5))
-        for layer, mode, width, end_width, scale in passes:
-            self._into(layer, area, self.dpr * scale, 24.0)
+        core, glow, spare, lit, lit_spare = self._ink_layers()
+        tail = stroke.tail() if goals is None else None
+        span = max((line or stroke.line)[-1][2], tail[2] if tail else 0.0) + 1.0
+
+        def run(mode, stage, width, end_width, scale):
             program = self._use("ink", (ONE, ONE))
-            gl.glBlendEquation(MAX)
-            program.setUniformValue("dpr", self.dpr * scale)
+            for name, value in (("dpr", self.dpr * scale), ("width", width), ("end_width", end_width),
+                                ("morph", morph), ("shine", shine), ("flow", flow), ("spin", spin), ("span", span)):
+                program.setUniformValue(name, float(value))
             program.setUniformValue("mode", mode)
-            program.setUniformValue("width", float(width))
-            program.setUniformValue("end_width", float(end_width))
-            program.setUniformValue("morph", float(morph))
-            program.setUniformValue("shine", float(shine))
-            program.setUniformValue("flow", float(flow))
-            program.setUniformValue("spin", float(spin))
+            program.setUniformValue("stage", stage)
             self._hues(program)
+            return program
+
+        self._into(core, area, self.dpr, 24.0, depth=True)
+        gl.glEnable(DEPTH_TEST)
+        for mode, stage, width, end_width, blend, equation, func, write in (
+                (0, 1, stroke.CORE_WIDTH, 3.5, (ONE, ZERO), FUNC_ADD, LESS, True),
+                (0, 2, stroke.CORE_WIDTH, 3.5, (ONE, ONE), MAX, LESS, False),
+                (1, 3, stroke.HIGHLIGHT_WIDTH, 0.0, OVER, FUNC_ADD, LEQUAL, False)):
+            program = run(mode, stage, width, end_width, 1.0)
+            gl.glBlendFunc(*blend)
+            gl.glBlendEquation(equation)
+            gl.glDepthFunc(func)
+            gl.glDepthMask(write)
+            self._draw(program, raw, INK_LAYOUT)
+        gl.glBlendEquation(FUNC_ADD)
+        gl.glDepthMask(True)
+        gl.glDisable(DEPTH_TEST)
+        passes = [(glow, 2, stroke.GLOW_WIDTH, 8.0, 0.5, area)]
+        blurs = [(glow, spare, 0.5, area), (glow, spare, 0.5, area)]
+        if light:
+            if self._light_owner is not stroke:
+                lit.fbo.bind()
+                gl.glDisable(SCISSOR_TEST)
+                gl.glClearColor(0.0, 0.0, 0.0, 0.0)
+                gl.glClear(COLOR_BUFFER_BIT)
+                self._light_owner = stroke
+            wide = area.adjusted(-120, -120, 120, 120).intersected(self._full())
+            passes.append((lit, 2, stroke.GLOW_WIDTH, 8.0, 0.125, wide))
+            blurs += [(lit, lit_spare, 0.125, wide), (lit, lit_spare, 0.125, wide)]
+        for layer, mode, width, end_width, scale, region in passes:
+            self._into(layer, region, self.dpr * scale, 24.0)
+            program = run(mode, 0, width, end_width, scale)
+            gl.glBlendEquation(MAX)
             self._draw(program, raw, INK_LAYOUT)
             gl.glBlendEquation(FUNC_ADD)
         uv = self._flipped(area)
-        for source, target, step in ((glow, spare, (1.0 / glow.size.width(), 0.0)),
-                                     (spare, glow, (0.0, 1.0 / glow.size.height()))):
-            self._into(target, area, self.dpr * 0.5, 24.0)
-            program = self._use("blur", (ONE, ZERO))
-            gl.glBindTexture(TEXTURE_2D, source.id)
-            program.setUniformValue("image", 0)
-            program.setUniformValue("step", *step)
-            for i, weight in enumerate(self._weights):
-                program.setUniformValue(f"weights[{i}]", float(weight))
-            self._draw(program, array("f", self._quad(area, uv)), (("pos", 2), ("uv", 2)))
+        for layer, temp, scale, region in blurs:
+            for source, target, step in ((layer, temp, (1.0 / layer.size.width(), 0.0)),
+                                         (temp, layer, (0.0, 1.0 / layer.size.height()))):
+                self._into(target, region, self.dpr * scale, 24.0 / scale)
+                program = self._use("blur", (ONE, ZERO))
+                gl.glBindTexture(TEXTURE_2D, source.id)
+                program.setUniformValue("image", 0)
+                program.setUniformValue("step", *step)
+                for i, weight in enumerate(self._weights):
+                    program.setUniformValue(f"weights[{i}]", float(weight))
+                self._draw(program, array("f", self._quad(region, self._flipped(region))), (("pos", 2), ("uv", 2)))
         gl.glDisable(SCISSOR_TEST)
         rebind()
         gl.glViewport(0, 0, self.device.width(), self.device.height())
         self._textured(glow.id, area, min(1.0, stroke.GLOW_STRENGTH * alpha * shine), SCREEN, uv)
         self._textured(core.id, area, alpha, OVER, uv)
-        self._textured(highlight.id, area, alpha * shine, OVER, uv)
         if tip:
-            self.tip(stroke.cursor, stroke.TIP_RADIUS, stroke.tip_color(flow), alpha)
+            self.tip(stroke.cursor, stroke.TIP_RADIUS, stroke.tip_color(flow), alpha * stroke.TIP_STRENGTH)
 
 
 class Backdrop(QOpenGLWindow):

@@ -94,15 +94,16 @@ def gaussian(sigma):
 
 
 class InkStroke:
-    GLOW_WIDTH = 26
+    GLOW_WIDTH = 32
     GLOW_SIGMA = 3.0
-    GLOW_STRENGTH = 1.0
+    GLOW_STRENGTH = 0.5
     MIN_STEP = 4.0
     SMOOTHING = 0.25
     CORE_WIDTH = 6
     HIGHLIGHT_WIDTH = 2
     TIP_RADIUS = 22
-    PAD = 36
+    TIP_STRENGTH = 0.6
+    PAD = 48
     STEP = 6.0
 
     def __init__(self, start):
