@@ -468,20 +468,6 @@ def parse_encoded(text):
     return None
 
 
-def code_language(code):
-    checks = [("JSON", r"^\s*[\[{]\s*\"", 0), ("Python", r"^\s*(def |class |import |from \w+ import|elif |print\()", re.M),
-              ("SQL", r"\b(SELECT|INSERT INTO|UPDATE|CREATE TABLE|DELETE FROM)\b", re.I),
-              ("Shell", r"^\s*(\$ |sudo |apt |dnf |git |cd |ls |export |echo |curl )", re.M),
-              ("JavaScript", r"\b(const|let|function|=>|console\.log|require\()", 0),
-              ("Rust", r"\b(fn |let mut |impl |pub fn|::new\()", 0), ("Go", r"\b(func |:= |package )", 0),
-              ("C/C++", r"#include|\bint main\(|std::", 0), ("Java", r"\b(public class|System\.out|@Override)", 0),
-              ("YAML", r"^\s*[\w-]+:\s*\S*$", re.M)]
-    for name, pattern, flags in checks:
-        if re.search(pattern, code, flags):
-            return name
-    return ""
-
-
 @resolver("jwt")
 def jwt_card(route):
     header, claims, signed = route.value
@@ -633,7 +619,6 @@ def code_or_error_card(route):
     entries = find_errors(route.text)
     if entries:
         return ErrorCard(title=entries[0].title, entries=entries, code=code, actions=error_actions(entries, code))
-    language = code_language(code)
     lines = code.count("\n") + 1
-    return CodeCard(title=language or "Code", chips=[f"{lines} line{'s' if lines != 1 else ''}"], code=code,
-                    language=language, copy_label="Copy code")
+    return CodeCard(title="Code", chips=[f"{lines} line{'s' if lines != 1 else ''}"], code=code,
+                    copy_label="Copy code")
