@@ -177,7 +177,7 @@ Run with `--instant` to search as soon as you finish circling.
 
 ## Settings
 
-Settings are read from `~/.config/circle-search/config.toml` (or `$XDG_CONFIG_HOME/circle-search/config.toml`) each time the app starts. The file is optional, and any setting left out keeps its default:
+Click the gear in the top-right corner of the overlay to change settings, or edit them by hand. Settings are read from `~/.config/circle-search/config.toml` (or `$XDG_CONFIG_HOME/circle-search/config.toml`) each time the app starts. The file is optional, and any setting left out keeps its default:
 
 ```toml
 contact = "you@example.com"
@@ -186,12 +186,12 @@ contact = "you@example.com"
 units = "imperial"
 
 [ocr]
-languages = ["jpn", "ell"]
+languages = ["eng", "jpn"]
 ```
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `contact` | none | Your email or website. Sent to Wikimedia, OpenStreetMap and MusicBrainz only, because their rules ask for a contact. |
+| `contact` | none | Your email or website. Sent to Wikimedia and OpenStreetMap only, because their rules ask for a contact. |
 | `cards` | `true` | Set to `false` to turn off cards. |
 | `history` | `true` | Set to `false` to stop saving recent selections and searches to `~/.local/share/circle-search/history.jsonl`. |
 | `gpu` | `"auto"` | Set to `"lite"` to stop the glow and shimmer from animating. This is automatic with software OpenGL (llvmpipe). |
@@ -200,7 +200,7 @@ languages = ["jpn", "ell"]
 | `locale.language` | from your regional settings | Language for translations, as a two-letter code (`"uk"`, `"de"`). |
 | `locale.currency` | from your regional settings | Currency to convert to (`"UAH"`, `"EUR"`). |
 | `locale.units` | from your regional settings | `"metric"` or `"imperial"`. |
-| `ocr.languages` | none | Extra OCR languages (`["jpn", "ell"]`). Each one needs its Tesseract language pack. English and your own language are always used. Each extra language makes OCR slower. |
+| `ocr.languages` | English and your region's language | Languages to read (`["eng", "jpn"]`). Each one needs its Tesseract language pack. Each language makes OCR slower. |
 
 If the file has a mistake, the app says so on standard error and uses the default for that setting. Older versions read `CIRCLE_SEARCH_*` environment variables; those are no longer read.
 

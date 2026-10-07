@@ -87,20 +87,30 @@ class Tesseract:
 
     def __init__(self):
         self._langs = None
+        self._installed = None
 
     def available(self):
         return shutil.which("tesseract") is not None
 
-    def languages(self):
-        if self._langs is None:
+    def installed(self):
+        if self._installed is None:
             try:
                 out = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, timeout=5).stdout
-                have = set(out.split()[1:]) if out else set()
+                self._installed = [lang for lang in (line.strip() for line in out.splitlines()[1:])
+                                   if lang and lang not in ("osd", "equ") and "/" not in lang]
             except (OSError, subprocess.SubprocessError):
-                have = set()
-            loc = current()
-            wanted = dict.fromkeys(["eng", loc.ocr_language(loc.language), *settings.OCR_LANGUAGES])
-            self._langs = "+".join(lang for lang in wanted if lang and lang in have) or "eng"
+                self._installed = []
+        return self._installed
+
+    def default_languages(self):
+        loc = current()
+        return [lang for lang in dict.fromkeys(["eng", loc.ocr_language(loc.language)]) if lang in self.installed()]
+
+    def languages(self):
+        if self._langs is None:
+            have = set(self.installed())
+            wanted = dict.fromkeys(settings.OCR_LANGUAGES or self.default_languages())
+            self._langs = "+".join(lang for lang in wanted if lang in have) or "eng"
         return self._langs
 
     def recognize(self, path, background=False, debug=None):

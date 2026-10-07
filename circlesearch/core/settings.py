@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -80,14 +81,49 @@ def load(path=CONFIG_PATH):
     return merge(read(path), DEFAULTS)
 
 
-config = load()
-CONTACT = config["contact"].strip()
-CARDS = config["cards"]
-HISTORY = config["history"]
-GPU = config["gpu"].lower()
-ROUTER = config["router"]
-DEBUG = config["debug"]
-LANGUAGE = config["locale"]["language"]
-CURRENCY = config["locale"]["currency"]
-UNITS = config["locale"]["units"].lower()
-OCR_LANGUAGES = config["ocr"]["languages"]
+def toml(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(toml(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def dump(config):
+    lines = [f"{key} = {toml(value)}" for key, value in config.items()
+             if not isinstance(value, dict) and value != DEFAULTS[key]]
+    for table, values in config.items():
+        if isinstance(values, dict):
+            rows = [f"{key} = {toml(value)}" for key, value in values.items() if value != DEFAULTS[table][key]]
+            if rows:
+                lines += ["", f"[{table}]", *rows] if lines else [f"[{table}]", *rows]
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def save(changed, path=CONFIG_PATH):
+    new = merge({key: {**config[key], **value} if isinstance(value, dict) else value
+                 for key, value in {**config, **changed}.items()}, DEFAULTS)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp = path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as f:
+        f.write(dump(new))
+    os.replace(temp, path)
+    apply(new)
+
+
+def apply(new):
+    global config, CONTACT, CARDS, HISTORY, GPU, ROUTER, DEBUG, LANGUAGE, CURRENCY, UNITS, OCR_LANGUAGES
+    config = new
+    CONTACT = config["contact"].strip()
+    CARDS = config["cards"]
+    HISTORY = config["history"]
+    GPU = config["gpu"].lower()
+    ROUTER = config["router"]
+    DEBUG = config["debug"]
+    LANGUAGE = config["locale"]["language"]
+    CURRENCY = config["locale"]["currency"]
+    UNITS = config["locale"]["units"].lower()
+    OCR_LANGUAGES = config["ocr"]["languages"]
+
+
+apply(load())

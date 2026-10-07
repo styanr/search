@@ -23,18 +23,17 @@ def _code(locale):
 @dataclass
 class QtLocale(Locale):
     money: QLocale = field(default_factory=QLocale)
-    _currency_names: dict = field(default_factory=dict, repr=False)
 
     @classmethod
-    def detect(cls):
+    def detect(cls, overrides=True):
         ui = _locale("LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG")
         regional = _locale("LC_ALL", "LC_ADDRESS", "LC_MONETARY", "LC_TELEPHONE", "LANG")
         money = _locale("LC_ALL", "LC_MONETARY", "LANG")
         measure = _locale("LC_ALL", "LC_MEASUREMENT", "LANG")
-        language = settings.LANGUAGE or _code(regional) or _code(ui)
-        currency = (settings.CURRENCY
+        language = overrides and settings.LANGUAGE or _code(regional) or _code(ui)
+        currency = (overrides and settings.CURRENCY
                     or money.currencySymbol(QLocale.CurrencySymbolFormat.CurrencyIsoCode) or "USD").upper()
-        metric = settings.UNITS != "imperial" if settings.UNITS else \
+        metric = settings.UNITS != "imperial" if overrides and settings.UNITS else \
             measure.measurementSystem() == QLocale.MeasurementSystem.MetricSystem
         country = QLocale.territoryToCode(regional.territory()) or ""
         return cls("en", language.lower(), currency, metric, country, money)
@@ -51,18 +50,6 @@ class QtLocale(Locale):
     def language_name(self, code):
         name = QLocale.languageToString(QLocale(code).language())
         return name if name and name != "C" else code
-
-    def currency_name(self, code):
-        if not self._currency_names:
-            for loc in QLocale.matchingLocales(QLocale.Language.AnyLanguage, QLocale.Script.AnyScript,
-                                               QLocale.Country.AnyCountry):
-                iso = loc.currencySymbol(QLocale.CurrencySymbolFormat.CurrencyIsoCode)
-                if iso and iso not in self._currency_names:
-                    name = QLocale(QLocale.Language.English, loc.territory()).currencySymbol(
-                        QLocale.CurrencySymbolFormat.CurrencyDisplayName)
-                    if name:
-                        self._currency_names[iso] = name[:1].upper() + name[1:]
-        return self._currency_names.get(code, code)
 
     def month_names(self, language):
         loc = QLocale(QLocale.Language.English) if language == "en" else QLocale(language)

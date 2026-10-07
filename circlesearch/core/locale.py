@@ -2,7 +2,7 @@ import locale as pylocale
 import os
 from dataclasses import dataclass
 
-from circlesearch.core import settings
+from circlesearch.core import currencies, settings
 
 IMPERIAL = {"US", "LR", "MM"}
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
@@ -39,7 +39,7 @@ class Locale:
         return code
 
     def currency_name(self, code):
-        return code
+        return currencies.NAMES.get(code, code)
 
     def month_names(self, language):
         return {name: i for i, name in enumerate(MONTHS, 1)} | {name[:3]: i for i, name in enumerate(MONTHS, 1)}

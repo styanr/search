@@ -17,10 +17,10 @@ from circlesearch.core.textindex import TextIndex
 from circlesearch.ui.backdrop import Backdrop
 from circlesearch.ui.board import CardBoard, shadow_rect
 from circlesearch.ui.effects import InkStroke, draw_glyph, draw_loader, lightness_at
-from circlesearch.ui.motion import (AMBIENT, MOTION, OUT_CUBIC, SPRING, SWEEP_EASE, WORD_SPRING, Animated, SpringCurve,
-                                    Tween, frame_timer, lerp, lerp_rect, mix, with_alpha)
+from circlesearch.ui.motion import (AMBIENT, CARD_SPRING, MOTION, OUT_CUBIC, SPRING, SWEEP_EASE, WORD_SPRING, Animated,
+                                    SpringCurve, Tween, frame_timer, lerp, lerp_rect, mix, with_alpha)
 from circlesearch.ui.reader import TextReader, to_point, to_qrect, to_rect
-from circlesearch.ui.searchbar import SearchBar
+from circlesearch.ui.searchbar import GearButton, SearchBar
 from circlesearch.ui.theme import (HIGHLIGHT_DARK, HIGHLIGHT_LIGHT, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SURFACE,
                                    SURFACE_HIGH, font)
 
@@ -44,6 +44,7 @@ PEN_SPEED = 1600
 INK_LIGHT = 0.45
 MORPH = 0.34
 MORPH_EASE = SpringCurve(0.9, 300.0, MORPH)
+CHIP_TOP = 26
 
 
 def copy_text(text):
@@ -156,8 +157,17 @@ class Overlay(QWidget):
         self.bar.pin.connect(self.do_pin)
         self.bar.recall.connect(self._recall)
         self.bar.edited.connect(self._typed_text)
+        self.gear = GearButton(self)
+        self.gear.hide()
+        self.gear.setGraphicsEffect(QGraphicsOpacityEffect(self.gear))
+        self.gear.clicked.connect(self.open_settings)
+        self.gear.hovered.connect(self._prerender_settings)
+        self.gear_shown = Animated(0.0, 0.3, SPRING)
+        self.prefs = None
+        self.prefs_anim = None
+        self._spare_prefs = None
 
-        QShortcut(QKeySequence("Escape"), self, self.dismiss)
+        QShortcut(QKeySequence("Escape"), self, self._escape)
         QShortcut(QKeySequence("Ctrl+Return"), self, self.do_image_search)
         QShortcut(QKeySequence("Ctrl+C"), self, self._copy_shortcut)
         QShortcut(QKeySequence("Ctrl+P"), self, self.do_pin)
@@ -183,6 +193,9 @@ class Overlay(QWidget):
     def card_anchor(self):
         bar = QRectF(self.bar_to if self.bar_to is not None else QPointF(self.bar.pos()), QSizeF(self.bar.size()))
         return bar, self.selection if self.selection is not None else bar
+
+    def stack_card(self, card):
+        card.stackUnder(self.bar.recent)
 
     def cards_wanted(self):
         return (self.selection is not None or self.typed) and self.exit is None
@@ -220,7 +233,8 @@ class Overlay(QWidget):
 
     def _remember(self, text):
         text = " ".join(text.split())
-        if text and text not in self._logged and not re.search(r"eyJ[\w-]{8,}\.|otpauth://|WIFI:", text):
+        if text and len(text) <= history.SHORT and text not in self._logged and \
+                not re.search(r"eyJ[\w-]{8,}\.|otpauth://|WIFI:", text):
             self._logged.append(text)
 
     def _image_done(self, token, codes, colors):
@@ -299,6 +313,7 @@ class Overlay(QWidget):
     def showEvent(self, event):
         self.intro = Tween(0.8)
         self.chip.set(1.0)
+        self.gear_shown.set(1.0)
         self.ticker.start()
         if not self._reading_screen:
             self._reading_screen = True
@@ -327,11 +342,16 @@ class Overlay(QWidget):
         self._step_energy(now)
         if self.exit is None:
             self.aurora.set(0.85 if working or self._working() else 0.5)
-            self.chip.set(1.0 if ((self.selection is None and not self.typed) or self.status) else 0.0)
+            idle = self.selection is None and not self.typed and self.prefs is None
+            self.chip.set(1.0 if idle or self.status else 0.0)
+            self.gear_shown.set(1.0 if idle else 0.0)
             self.scrim_selected.set(1.0 if self.selection is not None else 0.0)
 
         if self.bar_tween is not None:
             self._step_bar(now)
+        self._step_gear(now)
+        if self.prefs_anim is not None:
+            self._step_prefs(now)
         self.board.step(now)
         if self.morph is not None and self.morph[3].done(now):
             self.morph = None
@@ -386,7 +406,9 @@ class Overlay(QWidget):
             return True
         if self.ambient or self.exit is not None or self.morph is not None or not self.intro.done(now):
             return True
-        if any(a.active(now) for a in (self.aurora, self.chip, self.scrim_selected)):
+        if any(a.active(now) for a in (self.aurora, self.chip, self.gear_shown, self.scrim_selected)):
+            return True
+        if self.prefs_anim is not None:
             return True
         if self.chip.get(now) > 0.001 and self._chip_working():
             return True
@@ -424,6 +446,97 @@ class Overlay(QWidget):
             self.bar_tween = None
             self.bar.setGraphicsEffect(None)
 
+    def _step_gear(self, now):
+        a = max(0.0, self.gear_shown.get(now)) if self.exit is None else 0.0
+        if a <= 0.01:
+            if self.gear.isVisible():
+                self.gear.hide()
+                self.update(shadow_rect(self.gear))
+            return
+        pos = QPoint(self.width() - GearButton.SIZE - CHIP_TOP, round(lerp(4, CHIP_TOP, min(1.0, a))))
+        effect = self.gear.graphicsEffect()
+        if pos == self.gear.pos() and self.gear.isVisible() and effect.opacity() == min(1.0, a):
+            return
+        old = shadow_rect(self.gear)
+        self.gear.move(pos)
+        effect.setOpacity(min(1.0, a))
+        self.gear.show()
+        self.update(old.united(shadow_rect(self.gear)))
+
+    def _prepare_settings(self):
+        if self.prefs is None and self._spare_prefs is None and self.exit is None:
+            from circlesearch.ui.preferences import SettingsPanel
+            panel = SettingsPanel(self, min(820, self.width() - 32), self.height() - CHIP_TOP - 16)
+            panel.closeRequested.connect(self.close_settings)
+            panel.openRequested.connect(self._card_open)
+            self._spare_prefs = panel
+
+    def _prerender_settings(self):
+        if self.prefs is None and self._spare_prefs is None and self.exit is None:
+            self._prepare_settings()
+            self._spare_prefs.grab()
+
+    def open_settings(self):
+        if self.prefs is not None or self.exit is not None or self._leaving:
+            return
+        self._prepare_settings()
+        panel, self._spare_prefs = self._spare_prefs, None
+        panel.reset()
+        target = QPointF((self.width() - panel.width()) / 2, CHIP_TOP)
+        start = target + QPointF(0, -18)
+        effect = QGraphicsOpacityEffect(panel)
+        effect.setOpacity(0.0)
+        panel.setGraphicsEffect(effect)
+        panel.move(start.toPoint())
+        panel.show()
+        panel.raise_()
+        self.prefs = panel
+        self.prefs_anim = (start, target, Tween(0.5, CARD_SPRING), False)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def close_settings(self):
+        panel = self.prefs
+        if panel is None or (self.prefs_anim is not None and self.prefs_anim[3]):
+            return
+        panel.commit()
+        self.setFocus()
+        effect = panel.graphicsEffect()
+        if effect is None:
+            effect = QGraphicsOpacityEffect(panel)
+            panel.setGraphicsEffect(effect)
+        here = QPointF(panel.pos())
+        self.prefs_anim = (here, here, Tween(0.16), effect.opacity())
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def _step_prefs(self, now):
+        start, end, tween, closing = self.prefs_anim
+        panel = self.prefs
+        old = shadow_rect(panel)
+        effect = panel.graphicsEffect()
+        if closing:
+            effect.setOpacity(closing * (1.0 - tween.value(now)))
+        else:
+            k = tween.value(now)
+            panel.move(QPointF(lerp(start.x(), end.x(), k), lerp(start.y(), end.y(), k)).toPoint())
+            effect.setOpacity(min(1.0, tween.raw(now) * 3))
+        self.update(old.united(shadow_rect(panel)))
+        if not tween.done(now):
+            return
+        self.prefs_anim = None
+        if closing:
+            panel.hide()
+            panel.setGraphicsEffect(None)
+            self.prefs, self._spare_prefs = None, panel
+        else:
+            panel.setGraphicsEffect(None)
+
+    def _escape(self):
+        if self.prefs is not None and self.exit is None:
+            self.close_settings()
+        else:
+            self.dismiss()
+
     def _snapshot(self, widget, radius):
         effect = widget.graphicsEffect()
         opacity = effect.opacity() if effect is not None else 1.0
@@ -443,6 +556,13 @@ class Overlay(QWidget):
         self.bar.close_recent()
         if self.bar.isVisible():
             self._snapshot(self.bar, SearchBar.HEIGHT / 2)
+        if self.gear.isVisible():
+            self._snapshot(self.gear, GearButton.SIZE / 2)
+        if self.prefs is not None:
+            self.prefs.commit()
+            self.prefs_anim = None
+            if self.prefs.isVisible():
+                self._snapshot(self.prefs, self.prefs.radius())
         for card in self.board.cards:
             if card is self._pinned:
                 card.hide()
@@ -463,6 +583,9 @@ class Overlay(QWidget):
 
     def mousePressEvent(self, e):
         if self.exit is not None or self._leaving:
+            return
+        if self.prefs is not None:
+            self.close_settings()
             return
         if e.button() == Qt.MouseButton.RightButton:
             self._clear_selection()
@@ -503,7 +626,7 @@ class Overlay(QWidget):
     def keyPressEvent(self, e):
         blocked = e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier |
                                    Qt.KeyboardModifier.MetaModifier)
-        if self.selection is None and not self.typed and self.exit is None and not blocked:
+        if self.selection is None and not self.typed and self.exit is None and self.prefs is None and not blocked:
             ch = e.text()
             if ch and ch.isprintable() and not ch.isspace():
                 self._start_typing(ch)
@@ -524,9 +647,8 @@ class Overlay(QWidget):
         self.bar.edit.setText(text)
         self.bar.edit.setModified(True)
         self.bar.edit.setCursorPosition(len(text))
-        self.bar._text_edited(text)
-        if not text:
-            QTimer.singleShot(round(160 * MOTION), self.bar.open_recent)
+        self.bar._text_edited(text, suggest=False)
+        QTimer.singleShot(round(160 * MOTION), self.bar.open_recent)
         self.update()
 
     def _recall(self, text):
@@ -864,7 +986,7 @@ class Overlay(QWidget):
     def backdrop_ready(self, gpu):
         self.ambient = AMBIENT and not gpu.lite
         self.pane_alpha = 1.0 if gpu.lite else FROST_ALPHA
-        self.bar.pane_alpha = self.pane_alpha
+        self.bar.pane_alpha = self.gear.pane_alpha = self.pane_alpha
 
     def paintEvent(self, e):
         now = time.monotonic()
@@ -937,11 +1059,15 @@ class Overlay(QWidget):
 
     def _panes(self, fade):
         panes = []
-        for widget, radius in ((self.bar, SearchBar.HEIGHT / 2), *((c, c.radius()) for c in self.board.cards)):
+        widgets = [(self.bar, SearchBar.HEIGHT / 2), (self.gear, GearButton.SIZE / 2),
+                   *((c, c.radius()) for c in self.board.cards)]
+        if self.prefs is not None:
+            widgets.append((self.prefs, self.prefs.radius()))
+        for widget, radius in widgets:
             if widget is not None and widget.isVisible():
                 effect = widget.graphicsEffect()
                 opacity = effect.opacity() if effect is not None else 1.0
-                panes.append((QRectF(widget.geometry()), radius, opacity, opacity))
+                panes.append((QRectF(widget.geometry()), radius, opacity, 0.0 if widget is self.gear else opacity))
         panes += [(geometry, radius, opacity * fade, opacity * fade) for _, geometry, opacity, radius in self._snaps]
         return panes
 
@@ -1032,7 +1158,7 @@ class Overlay(QWidget):
         tw = fm.horizontalAdvance(text)
         h = 46
         w = 18 + 20 + 12 + tw + (14 + kw if show_key else 0) + 16
-        box = QRectF((self.width() - w) / 2, lerp(4, 26, min(1.0, a)), w, h)
+        box = QRectF((self.width() - w) / 2, lerp(4, CHIP_TOP, min(1.0, a)), w, h)
         key = (text, show_key, working and now)
         fresh = self._chip is None or self._chip[0] != key
         if fresh:

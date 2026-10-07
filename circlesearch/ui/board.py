@@ -234,7 +234,7 @@ class CardBoard:
             card.setGraphicsEffect(effect)
             card.move(start.toPoint())
             card.show()
-            card.raise_()
+            self.host.stack_card(card)
 
     def step(self, now):
         for card, (start, end, t) in list(self._anims.items()):

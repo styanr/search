@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import time
 
 from circlesearch.core import settings
 
 LIMIT = 300
+SHORT = 80
 
 
 def path():
@@ -16,14 +18,22 @@ def enabled():
     return settings.HISTORY
 
 
+def tidy(text):
+    return " ".join(text.split()).strip("\"'()[]{}<>.,;:!?«»“”‘’")
+
+
 def add(kind, text):
-    text = " ".join(text.split())
+    text = tidy(text)
     if not enabled() or not text or len(text) > 2000:
         return
     entries = load(LIMIT * 2)
     if entries and entries[0]["text"] == text and entries[0]["kind"] == kind:
         return
     entries.insert(0, {"t": round(time.time()), "kind": kind, "text": text})
+    _write(entries)
+
+
+def _write(entries):
     os.makedirs(os.path.dirname(path()), exist_ok=True)
     tmp = path() + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -53,25 +63,23 @@ def load(limit=LIMIT):
 
 def recent(limit=8, query=""):
     seen, out = set(), []
-    q = query.lower().strip()
+    q = " ".join(query.lower().split())
     for e in load():
-        key = e["text"].lower()
-        if key in seen or (q and q not in key):
+        text = tidy(e["text"])
+        key = text.lower()
+        if not key or key == q or key in seen or len(key) > SHORT or \
+                (q and not re.search(r"(?:^|\W)" + re.escape(q), key)):
             continue
         seen.add(key)
-        out.append(e)
+        out.append({**e, "text": text})
         if len(out) >= limit:
             break
     return out
 
 
 def remove(text):
-    entries = [e for e in load(LIMIT * 2) if e["text"] != text]
-    if not os.path.exists(path()):
-        return
-    with open(path(), "w", encoding="utf-8") as f:
-        for e in reversed(entries):
-            f.write(json.dumps(e, ensure_ascii=False) + "\n")
+    if os.path.exists(path()):
+        _write([e for e in load(LIMIT * 2) if e["text"] != text])
 
 
 def clear():
@@ -79,3 +87,8 @@ def clear():
         os.unlink(path())
     except OSError:
         pass
+
+
+def restore(entries):
+    if entries:
+        _write(load() + entries)

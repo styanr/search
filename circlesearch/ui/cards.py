@@ -812,7 +812,7 @@ class CardWidget(QWidget):
         self._paint_loader_label(p, rect)
 
     def _paint_loader_label(self, p, rect):
-        p.setFont(type_font("body", 560)); p.setPen(self.palette_["on_surface"])
-        p.drawText(QPointF(rect.right() + 18, 58), self.loading_label)
-        p.setFont(type_font("caption")); p.setPen(self.palette_["on_surface_variant"])
-        p.drawText(QPointF(rect.right() + 18, 80), "Wikipedia · Wikidata · OpenStreetMap")
+        f = type_font("body", 560)
+        fm = QFontMetrics(f)
+        p.setFont(f); p.setPen(self.palette_["on_surface"])
+        p.drawText(QPointF(rect.right() + 18, rect.center().y() + (fm.ascent() - fm.descent()) / 2), self.loading_label)

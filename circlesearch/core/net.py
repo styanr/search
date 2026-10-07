@@ -8,17 +8,18 @@ import urllib.request
 from circlesearch.core import settings
 
 USER_AGENT = "circle-search/0.1 (personal desktop prototype)"
-CONTACT_USER_AGENT = (f"circle-search/0.1 (personal desktop prototype; {settings.CONTACT})" if settings.CONTACT else
-                      "circle-search/0.1 (personal desktop prototype; https://www.mediawiki.org/wiki/API:Etiquette)")
 CONTACT_HOSTS = ("wikipedia.org", "wiktionary.org", "wikidata.org", "wikivoyage.org", "wikimedia.org",
-                 "openstreetmap.org", "musicbrainz.org", "listenbrainz.org")
+                 "openstreetmap.org")
 TIMEOUT = 2.5
 OPTIONAL_TIMEOUT = 1.2
 
 
 def user_agent(url):
     host = urllib.parse.urlsplit(url).hostname or ""
-    return CONTACT_USER_AGENT if any(host == h or host.endswith("." + h) for h in CONTACT_HOSTS) else USER_AGENT
+    if not any(host == h or host.endswith("." + h) for h in CONTACT_HOSTS):
+        return USER_AGENT
+    contact = settings.CONTACT or "https://www.mediawiki.org/wiki/API:Etiquette"
+    return f"circle-search/0.1 (personal desktop prototype; {contact})"
 
 
 def get_json(url, headers=None, timeout=TIMEOUT, retry=True):

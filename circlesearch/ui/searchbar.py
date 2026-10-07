@@ -148,6 +148,35 @@ class IconButton(PillButton):
         glyph(p, self.icon, r.adjusted(inset, inset, -inset, -inset), mix(ON_SURFACE_VARIANT, ON_SURFACE, hover))
 
 
+class GearButton(IconButton):
+    SIZE = 46
+    hovered = pyqtSignal()
+
+    def __init__(self, parent):
+        super().__init__("gear", "Settings")
+        self.setParent(parent)
+        self.pane_alpha = 1.0
+        self.resize(self.SIZE, self.SIZE)
+
+    def enterEvent(self, e):
+        super().enterEvent(e)
+        self.hovered.emit()
+
+    def paintEvent(self, _):
+        hover, press = self._hover.value, self._press.value
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(255, 255, 255, 18), 1))
+        p.setBrush(with_alpha(SURFACE, self.pane_alpha))
+        p.drawEllipse(r)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(with_alpha(ON_SURFACE, (T.HOVER_ALPHA * hover + T.PRESS_ALPHA * press) * 1.4 / 255))
+        p.drawEllipse(r)
+        inset = 13 - 1.5 * hover + 1.5 * max(0.0, self._squish.value)
+        glyph(p, "gear", r.adjusted(inset, inset, -inset, -inset), mix(ON_SURFACE_VARIANT, ON_SURFACE, hover))
+
+
 class RecentList(QWidget):
     picked = pyqtSignal(str)
     ROW = 44
@@ -313,6 +342,7 @@ class SearchBar(QWidget):
             layout.addWidget(b)
         self.resize(820, self.HEIGHT)
         self.prefer_text = False
+        self.typing = False
 
         self.pane_alpha = 1.0
         self.fade = QGraphicsOpacityEffect(self.edit)
@@ -346,11 +376,11 @@ class SearchBar(QWidget):
         p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
         draw_glyph(p, QPointF(31, r.center().y()), radius=9, width=3)
 
-    def _text_edited(self, text):
+    def _text_edited(self, text, suggest=True):
         has_text = bool(text.strip())
         self.text_btn.setEnabled(has_text)
         self.copy_btn.setEnabled(has_text)
-        if self.recent.isVisible():
+        if suggest and (self.typing or self.recent.isVisible()):
             if not self.recent.show_for(self, text):
                 self.recent.close_list()
         self._debounce.start()
@@ -398,6 +428,7 @@ class SearchBar(QWidget):
         return super().eventFilter(obj, e)
 
     def set_selection(self, text, prefer_text, reading=False):
+        self.typing = False
         self.text_btn.set_spinning(reading)
         self.edit.setPlaceholderText("Search with Google Lens")
         self.edit.setText(text)
@@ -414,6 +445,7 @@ class SearchBar(QWidget):
     def set_typing(self):
         self.set_selection("", True)
         self.edit.setPlaceholderText("Search or paste")
+        self.typing = True
         self.prefer_text = True
         self.image_btn.setEnabled(False)
         self.pin_btn.setEnabled(False)

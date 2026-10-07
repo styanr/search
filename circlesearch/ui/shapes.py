@@ -263,4 +263,12 @@ def glyph(p, name, rect, color):
         path.quadTo(QPointF(x + w * .5, y + h * .94), QPointF(x + w * .06, y + h * .5))
         p.drawPath(path)
         p.drawEllipse(QPointF(x + w * .5, y + h * .5), w * .13, w * .13)
+    elif name == "gear":
+        points = []
+        for i in range(8):
+            for radius, offset in ((.33, -14), (.45, -8), (.45, 8), (.33, 14)):
+                a = math.radians(i * 45 + offset)
+                points.append(QPointF(x + w * (.5 + radius * math.cos(a)), y + h * (.5 + radius * math.sin(a))))
+        p.drawPolygon(points)
+        p.drawEllipse(QPointF(x + w * .5, y + h * .5), w * .13, w * .13)
     p.restore()
