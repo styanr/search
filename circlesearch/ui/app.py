@@ -132,15 +132,12 @@ def main():
     overlays = []
     for screen, shot, scale in layouts(image, app.screens(), app.primaryScreen()):
         overlay = Overlay(shot, screen, instant=args.instant, scale=scale)
-        overlay.setGeometry(screen.geometry())
-        overlay.create()
-        if overlay.windowHandle() is not None:
-            overlay.windowHandle().setScreen(screen)
+        overlay.place(screen)
         overlays.append(overlay)
     session = Session(app, overlays, lock)
     cursor = QCursor.pos()
     for overlay in sorted(overlays, key=lambda o: o.geometry().contains(cursor)):
-        overlay.showFullScreen()
+        overlay.present()
     next((o for o in overlays if o.geometry().contains(cursor)), overlays[0]).activateWindow()
     session.start()
     code = app.exec()

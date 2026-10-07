@@ -1,3 +1,4 @@
+import bisect
 import math
 import os
 import re
@@ -7,17 +8,16 @@ import time
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QShortcut
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 from circlesearch.core import actions, history, settings
 from circlesearch.core.ocr import join_words
 from circlesearch.core.textindex import TextIndex
-from circlesearch.ui.backdrop import Renderer
+from circlesearch.ui.backdrop import Backdrop
 from circlesearch.ui.board import CardBoard, shadow_rect
 from circlesearch.ui.effects import InkStroke, draw_glyph, draw_loader, lightness_at
-from circlesearch.ui.motion import (AMBIENT, MOTION, OUT_CUBIC, SPRING, SWEEP_EASE, WORD_SPRING, Animated, Tween,
-                                    frame_timer, lerp, lerp_rect, mix, with_alpha)
+from circlesearch.ui.motion import (AMBIENT, MOTION, OUT_CUBIC, SPRING, SWEEP_EASE, WORD_SPRING, Animated, SpringCurve,
+                                    Tween, frame_timer, lerp, lerp_rect, mix, with_alpha)
 from circlesearch.ui.reader import TextReader, to_point, to_qrect, to_rect
 from circlesearch.ui.searchbar import SearchBar
 from circlesearch.ui.theme import (HIGHLIGHT_DARK, HIGHLIGHT_LIGHT, ON_SURFACE, ON_SURFACE_VARIANT, PRIMARY, SURFACE,
@@ -37,6 +37,9 @@ SHIMMER_SWEEP, SHIMMER_PERIOD = 1.1, 1.6
 WORD_REVEAL, WORD_CASCADE = 0.22, 0.28
 FRAME_SETTLE = 0.5
 LIFT_GROW, LIFT_MAX = 10, 0.04
+FLOW = 240
+MORPH = 0.34
+MORPH_EASE = SpringCurve(0.9, 300.0, MORPH)
 
 
 def copy_text(text):
@@ -47,15 +50,17 @@ def copy_text(text):
 SENSITIVE = ("jwt", "wifi", "otp")
 
 
-class Overlay(QOpenGLWidget):
+class Overlay(QWidget):
     closed = pyqtSignal()
     selecting = pyqtSignal(object)
     finished = pyqtSignal(object)
 
     def __init__(self, screenshot: QImage, screen, instant=False, scale=None):
         super().__init__()
+        self.backdrop = Backdrop(self)
         self.setWindowTitle("Circle to Search")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setMouseTracking(True)
         self.instant = instant
@@ -83,6 +88,7 @@ class Overlay(QOpenGLWidget):
         self.selected_words = []
         self.index = TextIndex()
         self.reading = False
+        self.refining = False
         self._pending = None
         self.status = ""
         self.debug_dir = None
@@ -116,13 +122,13 @@ class Overlay(QOpenGLWidget):
         self.shape_from = None
         self.shape_tween = None
         self.frame_tween = None
-        self.ghost = None
+        self.morph = None
         self._snaps = []
         self._leaving = False
         self.bar_from = self.bar_to = None
         self.bar_tween = None
-        self.gpu = None
         self.ambient = AMBIENT
+        self._shadows = {}
         self._chip = None
         self._word_batch = None
         self.ticker = frame_timer(self, self._tick)
@@ -140,6 +146,24 @@ class Overlay(QOpenGLWidget):
         QShortcut(QKeySequence("Ctrl+Return"), self, self.do_image_search)
         QShortcut(QKeySequence("Ctrl+C"), self, self._copy_shortcut)
         QShortcut(QKeySequence("Ctrl+P"), self, self.do_pin)
+
+    def place(self, screen):
+        self.setGeometry(screen.geometry())
+        self.backdrop.setScreen(screen)
+        self.backdrop.setGeometry(screen.geometry())
+        self.create()
+        handle = self.windowHandle()
+        if handle is not None:
+            handle.setScreen(screen)
+            handle.setTransientParent(self.backdrop)
+
+    def present(self):
+        self.backdrop.showFullScreen()
+        self.showFullScreen()
+
+    def update(self, *args):
+        super().update(*args)
+        self.backdrop.update()
 
     def card_anchor(self):
         bar = QRectF(self.bar_to if self.bar_to is not None else QPointF(self.bar.pos()), QSizeF(self.bar.size()))
@@ -242,13 +266,18 @@ class Overlay(QOpenGLWidget):
         new = self.index.words_in(to_rect(self.selection))
         old_text, new_text = join_words(self.selected_words), join_words(new)
         if new and new_text != old_text and not self.bar.edit.isModified():
+            started = self.words_t0
             self.selected_words = new
             self._start_word_reveal()
-            self.words_t0 -= 10
+            if started is not None and not self.refining:
+                self.words_t0 = started
             if self.code_route is None:
                 self.bar.set_selection(new_text, self._prefers_text(new))
             self._request_cards(new_text, new)
-            self.update(self.selection.adjusted(-24, -24, 24, 24).toAlignedRect())
+        if self.refining:
+            self.refining = False
+            self._settle()
+        self.update()
         if self.instant:
             self.bar.run_default()
 
@@ -288,18 +317,21 @@ class Overlay(QOpenGLWidget):
         if self.bar_tween is not None:
             self._step_bar(now)
         self.board.step(now)
-        if self.ghost is not None and self.ghost[1].done(now):
-            self.ghost = None
+        if self.morph is not None and self.morph[3].done(now):
+            self.morph = None
             self.update()
         if self.exit is not None and self.exit.done(now):
             self.ticker.stop()
             self.close()
             return
+        if self.exit is not None:
+            for _, geometry, _, _ in self._snaps:
+                QWidget.update(self, geometry.adjusted(-48, -48, 48, 48).toAlignedRect())
         if self._moving(now):
-            self.update()
+            self.backdrop.update()
 
     def _moving(self, now):
-        if self.ambient or self.exit is not None or self.ghost is not None or not self.intro.done(now):
+        if self.ambient or self.exit is not None or self.morph is not None or not self.intro.done(now):
             return True
         if any(a.active(now) for a in (self.aurora, self.chip, self.scrim_selected)):
             return True
@@ -373,6 +405,7 @@ class Overlay(QOpenGLWidget):
             history.add("selection", text)
         self._logged = []
         self.closed.emit()
+        self.backdrop.close()
         super().closeEvent(e)
 
     def mousePressEvent(self, e):
@@ -383,12 +416,13 @@ class Overlay(QOpenGLWidget):
             return
         if e.button() == Qt.MouseButton.LeftButton:
             self.selecting.emit(self)
-            self.ink = InkStroke(self.size(), self.dpr, e.position())
-            self.update(self.ink.bounds.toAlignedRect())
+            self.ink = InkStroke(e.position())
+            self.backdrop.update()
 
     def mouseMoveEvent(self, e):
         if self.ink is not None:
-            self.update(self.ink.add(e.position()).toAlignedRect())
+            self.ink.add(e.position())
+            self.backdrop.update()
 
     def mouseReleaseEvent(self, e):
         if self.ink is None or e.button() != Qt.MouseButton.LeftButton:
@@ -397,14 +431,14 @@ class Overlay(QOpenGLWidget):
         ink.add(e.position())
         bounds = ink.raw
         if max(bounds.width(), bounds.height()) < TAP_DISTANCE:
-            self.update(ink.bounds.toAlignedRect())
+            self.backdrop.update()
             self._select_word_at(e.position())
         else:
             pad = SELECTION_PADDING
             target = bounds.adjusted(-pad, -pad, pad, pad).intersected(QRectF(self.rect()))
             ink.finish()
-            self.ghost = (ink, Tween(0.22))
-            self._set_selection(target, bounds, min(bounds.width(), bounds.height()) / 2)
+            self._set_selection(target, target, self._radius(target))
+            self.morph = (ink, *self._morph_path(ink.line, target, self._radius(target)), Tween(MORPH, MORPH_EASE))
             self._scan = self.reader.scan(target, QRectF(self.rect()))
             self._finish_selection()
         self.update()
@@ -460,8 +494,11 @@ class Overlay(QOpenGLWidget):
     def _set_selection(self, target, start_rect, start_radius):
         self.shape_from = (QRectF(start_rect), start_radius)
         self.shape_tween = Tween(0.5, SPRING)
+        self.morph = None
         self.frame_tween = None
         self.selection = target
+        self.selected_words = []
+        self.refining = False
         self.typed = False
         self.code_route = None
         self.colors = []
@@ -469,9 +506,89 @@ class Overlay(QOpenGLWidget):
         self.board.clear()
         self.selection_light = self._mean_lightness(target) > 0.5
 
+    @staticmethod
+    def _radius(rect):
+        return min(18.0, rect.height() * 0.32, rect.width() * 0.32)
+
+    @staticmethod
+    def _ring(rect, radius):
+        r = min(radius, rect.width() / 2, rect.height() / 2)
+        x0, y0, x1, y1 = rect.left() + r, rect.top() + r, rect.right() - r, rect.bottom() - r
+        points = []
+        for cx, cy, a in ((x1, y0, -90), (x1, y1, 0), (x0, y1, 90), (x0, y0, 180)):
+            for i in range(9):
+                t = math.radians(a + i * 90 / 8)
+                points.append((cx + r * math.cos(t), cy + r * math.sin(t)))
+        points.append(points[0])
+        lengths = [0.0]
+        for (ax, ay), (bx, by) in zip(points, points[1:]):
+            lengths.append(lengths[-1] + math.hypot(bx - ax, by - ay))
+        return points, lengths
+
+    @staticmethod
+    def _ring_at(ring, s):
+        points, lengths = ring
+        s %= lengths[-1]
+        i = min(len(points) - 2, bisect.bisect_right(lengths, s) - 1)
+        (ax, ay), (bx, by) = points[i], points[i + 1]
+        k = (s - lengths[i]) / max(lengths[i + 1] - lengths[i], 1e-9)
+        return ax + (bx - ax) * k, ay + (by - ay) * k
+
+    @staticmethod
+    def _ring_find(ring, x, y):
+        points, lengths = ring
+        best = None
+        for i, ((ax, ay), (bx, by)) in enumerate(zip(points, points[1:])):
+            dx, dy = bx - ax, by - ay
+            k = min(1.0, max(0.0, ((x - ax) * dx + (y - ay) * dy) / max(dx * dx + dy * dy, 1e-9)))
+            d = math.hypot(ax + dx * k - x, ay + dy * k - y)
+            if best is None or d < best[0]:
+                best = (d, lengths[i] + (lengths[i + 1] - lengths[i]) * k)
+        return best[1]
+
+    def _morph_path(self, line, rect, radius):
+        ring = self._ring(rect, radius)
+        total = ring[1][-1]
+        c = rect.center()
+        sweep, prev = 0.0, None
+        for x, y, _ in line:
+            angle = math.degrees(math.atan2(y - c.y(), x - c.x()))
+            if prev is not None:
+                sweep += (angle - prev + 180) % 360 - 180
+            prev = angle
+        length = max(line[-1][2], 1e-6)
+        start, end = self._ring_find(ring, *line[0][:2]), self._ring_find(ring, *line[-1][:2])
+        options = []
+        for d in (1, -1):
+            arc = (end - start) * d % total
+            arc += total * max(0, round((sweep * d / 360 * total - arc) / total))
+            gap = max(0.0, total - arc) / 2
+            options.append([(line[0], start - d * gap)] + [(p, start + d * p[2] / length * arc) for p in line] +
+                           [(line[-1], start + d * (arc + gap))])
+
+        def cost(option):
+            sample = option[1:-1:4] or option
+            return sum((x - gx) ** 2 + (y - gy) ** 2 for (x, y, _), (gx, gy) in
+                       ((p, self._ring_at(ring, s)) for p, s in sample)) / len(sample)
+
+        best = min(options, key=cost)
+        points, goals, prev = [], [], None
+        for ((x0, y0, s0), g0), ((x1, y1, s1), g1) in zip(best, best[1:] + best[-1:]):
+            n = max(1, math.ceil(abs(g1 - g0) / 4))
+            for i in range(n if (x0, y0, s0, g0) != (x1, y1, s1, g1) else 1):
+                k = i / n
+                gx, gy = self._ring_at(ring, g0 + (g1 - g0) * k)
+                angle = math.degrees(math.atan2(c.y() - gy, gx - c.x()))
+                if prev is not None:
+                    angle = prev + (angle - prev + 180) % 360 - 180
+                prev = angle
+                points.append((x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, s0 + (s1 - s0) * k))
+                goals.append((gx, gy, angle))
+        return points, goals
+
     def _shape(self, now):
         target = self.selection
-        radius = min(18.0, target.height() * 0.32, target.width() * 0.32)
+        radius = self._radius(target)
         if self.shape_tween is None:
             return target, radius
         p = self.shape_tween.value(now)
@@ -481,11 +598,13 @@ class Overlay(QOpenGLWidget):
 
     def _clear_selection(self):
         self.selection = None
+        self.morph = None
         self.typed = False
         self.code_route = None
         self.selected_words = []
         self._pending = None
         self.reading = False
+        self.refining = False
         self.bar.hide()
         self.board.clear()
         self.update()
@@ -524,10 +643,20 @@ class Overlay(QOpenGLWidget):
         word_area = sum(w.rect.w * w.rect.h for w in words)
         return word_area / max(1.0, sel.width() * sel.height()) >= TEXT_COVERAGE
 
+    def _settle(self):
+        self.frame_tween = Tween(FRAME_SETTLE)
+        if self.morph is not None:
+            self.frame_tween.start = max(self.frame_tween.start, self.morph[3].start + self.morph[3].duration)
+        self._start_word_reveal()
+
     def _apply_selection_words(self, provisional):
         self.selected_words = self.index.words_in(to_rect(self.selection))
-        self.frame_tween = Tween(FRAME_SETTLE)
-        self._start_word_reveal()
+        self.refining = provisional and bool(self._pending and self._pending[0] == "select")
+        if self.refining:
+            self.frame_tween = None
+            self._start_word_reveal()
+        else:
+            self._settle()
         text = join_words(self.selected_words)
         if self.code_route is None:
             self._show_bar(text, self._prefers_text(self.selected_words))
@@ -675,17 +804,54 @@ class Overlay(QOpenGLWidget):
         actions.search_image(self._crop_png())
         self.dismiss()
 
-    def initializeGL(self):
-        self.gpu = Renderer(self.shot)
-        self.ambient = AMBIENT and not self.gpu.lite
+    def backdrop_ready(self, gpu):
+        self.ambient = AMBIENT and not gpu.lite
 
-    def paintGL(self):
+    def paintEvent(self, e):
+        now = time.monotonic()
+        fade = 1.0 - (self.exit.value(now) if self.exit is not None else 0.0)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        for widget, radius in ((self.bar, SearchBar.HEIGHT / 2), *((c, c.radius()) for c in self.board.cards)):
+            if widget is not None and widget.isVisible():
+                effect = widget.graphicsEffect()
+                self._paint_shadow(p, QRectF(widget.geometry()), effect.opacity() if effect is not None else 1.0, radius)
+        for image, geometry, opacity, radius in self._snaps:
+            self._paint_shadow(p, geometry, opacity * fade, radius)
+            p.setOpacity(opacity * fade)
+            p.drawImage(geometry.topLeft(), image)
+            p.setOpacity(1.0)
+
+    def _paint_shadow(self, p, geometry, opacity, radius=None):
+        size = geometry.size().toSize()
+        radius = size.height() / 2 if radius is None else radius
+        key = (size.width(), size.height(), radius)
+        if key not in self._shadows:
+            pad, s = 48, 12
+            img = QImage((size.width() + 2 * pad) // s, (size.height() + 2 * pad) // s,
+                         QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(0)
+            sp = QPainter(img)
+            sp.setRenderHint(QPainter.RenderHint.Antialiasing)
+            sp.scale(1 / s, 1 / s)
+            sp.setPen(Qt.PenStyle.NoPen)
+            sp.setBrush(QColor(0, 0, 0, 170))
+            sp.drawRoundedRect(QRectF(pad + 8, pad + 14, size.width() - 16, size.height()), radius, radius)
+            sp.end()
+            if len(self._shadows) > 8:
+                self._shadows.clear()
+            self._shadows[key] = img
+        p.setOpacity(opacity)
+        p.drawImage(geometry.adjusted(-48, -48, 48, 48), self._shadows[key])
+        p.setOpacity(1.0)
+
+    def paint_backdrop(self, g):
         now = time.monotonic()
         t = (now - self.t0) if self.ambient else 0.0
         fade = 1.0 - (self.exit.value(now) if self.exit is not None else 0.0)
         intro = self.intro.value(now)
-        g = self.gpu
-        g.begin(self.width(), self.height(), self.devicePixelRatioF())
+        g.begin(self.width(), self.height(), self.backdrop.devicePixelRatio())
         front = self._sweep_front(intro)
         band = SWEEP_EDGE * 1.6
         glow = self.aurora.get(now) * fade * min(1.0, intro * 1.6)
@@ -695,25 +861,20 @@ class Overlay(QOpenGLWidget):
             rect, radius = self._shape(now)
             amount = self._lift(now)
             lifted, lifted_radius, _ = self._lifted(rect, radius, amount)
-            hole, lift = (lifted, lifted_radius), (rect, amount)
+            hole, lift = (lifted, lifted_radius, self._opening(now)), (rect, amount)
         g.background(shade=(self.scrim_top, self.scrim_bottom, SCRIM_SELECTED * self.scrim_selected.get(now), fade),
                      sweep=(front, SWEEP_EDGE), hole=hole, lift=lift,
                      glow=(glow if glow > 0.01 else 0.0, t, self.height() - AURORA_HEIGHT, AURORA_HEIGHT),
                      wave=(wave, t + 3.0, front - band * 0.55, band))
         if self.selection is not None:
             self._paint_selection(g, now, t, fade)
-        if self.ghost is not None:
-            ink, tween = self.ghost
-            g.ink(ink, (1 - tween.value(now)) * fade, tip=False)
+        flow, spin = self._flow(now), self._spin(now)
+        if self.morph is not None:
+            ink, line, goals, tween = self.morph
+            g.ink(ink, fade, flow, spin, tip=False, line=line, goals=goals, morph=tween.value(now),
+                  shine=self._shine(tween.raw(now)))
         if self.ink is not None:
-            g.ink(self.ink)
-        for widget, radius in ((self.bar, SearchBar.HEIGHT / 2), *((c, c.radius()) for c in self.board.cards)):
-            if widget is not None and widget.isVisible():
-                effect = widget.graphicsEffect()
-                g.shadow(QRectF(widget.geometry()), effect.opacity() if effect is not None else 1.0, radius)
-        for image, geometry, opacity, radius in self._snaps:
-            g.shadow(geometry, opacity * fade, radius)
-            g.image(("snap", id(image)), image, geometry, opacity * fade)
+            g.ink(self.ink, 1.0, flow, spin)
         self._paint_chip(g, now, fade)
         g.end()
 
@@ -733,14 +894,29 @@ class Overlay(QOpenGLWidget):
         w, h = rect.width() * s, rect.height() * s
         return QRectF(c.x() - w / 2, c.y() - h / 2, w, h), radius * s, s
 
+    def _flow(self, now):
+        return (now - self.t0) * FLOW if self.ambient else 0.0
+
+    def _appear(self, now):
+        return 1.0 if self.morph is None or self.morph[3].done(now) else 0.0
+
+    def _opening(self, now):
+        return 1.0 if self.morph is None else self.morph[3].value(now)
+
+    @staticmethod
+    def _shine(u):
+        u = min(1.0, max(0.0, (u - 0.2) / 0.8))
+        return 1.0 - u * u * (3 - 2 * u)
+
     def _spin(self, now):
         return (now - self.t0) * 160 if self.ambient else 0.0
 
     def _paint_selection(self, g, now, t, fade):
         source, radius = self._shape(now)
         rect, radius, scale = self._lifted(source, radius, self._lift(now))
-        if self.selected_words:
+        if self.selected_words and not self.refining:
             self._paint_words(g, now, rect, radius, fade, source.center(), scale)
+        fade *= self._appear(now)
 
         if self.reading or self.frame_tween is None:
             if self.ambient:
@@ -770,7 +946,7 @@ class Overlay(QOpenGLWidget):
         g.frame(r, rad, s, lerp(3.5, pen, k), pen, white, fade, self._spin(now), rect.center())
 
     def _paint_words(self, g, now, rect, radius, fade, center, scale):
-        key = (self.words_t0, len(self.selected_words), rect.getRect(), radius, fade)
+        key = (id(self.selected_words), self.words_t0, rect.getRect(), radius, fade)
         if self._word_batch is None or self._word_batch[0] != key or self._words_active(now):
             light, dark = [], []
             for i, w in enumerate(self.selected_words):
