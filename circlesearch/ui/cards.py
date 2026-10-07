@@ -1,4 +1,5 @@
 import importlib
+import threading
 import time
 from dataclasses import dataclass
 from functools import cache
@@ -18,6 +19,8 @@ from circlesearch.ui.theme import C, type_font
 TRANSITION = 0.55
 TRANSITION_SPRING = SpringCurve(duration=TRANSITION)
 CONFIRM_HOLD = 1.5
+
+SECTION = "section"
 
 views = Registry("card view")
 
@@ -195,6 +198,17 @@ class CardView:
 
     def release(self, pos):
         return False
+
+    settling = False
+
+    def animating(self):
+        return False
+
+    def closed_height(self):
+        return self.w.height()
+
+    def final_height(self):
+        return self.w.height()
 
     def state_key(self):
         return None
@@ -527,6 +541,9 @@ class CardWidget(QWidget):
     runRequested = pyqtSignal(object)
     pinRequested = pyqtSignal(object)
     closeRequested = pyqtSignal()
+    relayout = pyqtSignal()
+    relatedRequested = pyqtSignal(object)
+    detailReady = pyqtSignal(int, object)
 
     def __init__(self, parent, palette, ambient=True, width=404, role="secondary", pinnable=False, pinned=False):
         super().__init__(parent)
@@ -537,6 +554,11 @@ class CardWidget(QWidget):
         self._dragging = False
         self.WIDTH = width
         self.pane_alpha = 1.0
+        self.open_section = None
+        self.details = {}
+        self.grow_down = True
+        self.detailReady.connect(self._detail_ready)
+        self.slot = ""
         self.card = None
         self.view = None
         self.loading = False
@@ -577,6 +599,7 @@ class CardWidget(QWidget):
         animate = self.loading and self.isVisible() and self.ambient
         h0, loader_t = self.height(), time.monotonic() - self._t0
         self._cache_key = None
+        self.open_section, self.details = None, {}
         self.card, self.loading = card, False
         self.assets = assets
         cls = view_for(card)
@@ -598,8 +621,62 @@ class CardWidget(QWidget):
     def transitioning(self):
         return self._trans_t0 is not None
 
+    def growing(self):
+        return self.view is not None and self.view.animating()
+
+    def room(self):
+        parent = self.parentWidget()
+        if parent is None:
+            return 10 ** 6
+        closed = self.view.closed_height() if self.view is not None else self.height()
+        return parent.height() - 16 - (self.y() + closed) if self.grow_down else self.y() + self.height() - 16 - closed
+
     def layout_height(self):
-        return self._h1 if self._trans_t0 is not None else self.height()
+        if self._trans_t0 is not None:
+            return self._h1
+        return self.view.final_height() if self.growing() else self.height()
+
+    def open_link(self, link):
+        self.relatedRequested.emit(link)
+
+    def prefetch(self, i):
+        if self.card is None or not 0 <= i < len(self.card.sections) or self.details.get(i) is not None:
+            return
+        self.details[i] = "loading"
+        section = self.card.sections[i]
+
+        def work():
+            try:
+                detail = section.load()
+            except Exception:
+                detail = False
+            try:
+                self.detailReady.emit(i, detail)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def toggle_section(self, i):
+        if self.open_section == i:
+            self.open_section = None
+        else:
+            self.open_section = i
+            if self.details.get(i) is False:
+                del self.details[i]
+            self.prefetch(i)
+        self._retarget()
+
+    def _detail_ready(self, i, detail):
+        self.details[i] = detail
+        if i == self.open_section:
+            self._retarget()
+        self.update()
+
+    def _retarget(self):
+        self._layout(None)
+        self.relayout.emit()
+        self._wake()
 
     def _layout(self, p):
         targets = {}
@@ -664,6 +741,12 @@ class CardWidget(QWidget):
                 active = True
         if self.view is not None and self.view.step(dt):
             active = True
+        if self.view is not None and self.view.animating():
+            self.resize(self.WIDTH, self._layout(None))
+            active = True
+        elif self.view is not None and self.view.settling:
+            self.view.settling = False
+            self.resize(self.WIDTH, self._layout(None))
         self.update()
         if not active:
             self._motion_timer.stop()
@@ -684,6 +767,8 @@ class CardWidget(QWidget):
         if hover != self.hover:
             self.hover = hover
             self.setCursor(Qt.CursorShape.PointingHandCursor if hover else Qt.CursorShape.ArrowCursor)
+            if hover and hover.startswith(SECTION) and hover[len(SECTION):].isdigit():
+                self.prefetch(int(hover[len(SECTION):]))
             self._aim()
 
     def leaveEvent(self, e):

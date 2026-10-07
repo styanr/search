@@ -3,6 +3,8 @@ from PyQt6.QtCore import QPointF, QRect, QRectF, QTimer
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
 
 from circlesearch.core import settings
+from circlesearch.core.cards import Dismiss, Pending
+from circlesearch.core.net import safe
 from circlesearch.ui.motion import AMBIENT, CARD_SPRING, MOTION, Tween, lerp
 from circlesearch.ui.theme import PALETTE
 
@@ -31,6 +33,7 @@ class CardBoard:
         self.feed = None
         self._text = None
         self._token = None
+        self._choice = None
 
     def request(self, text, words=None, route=None):
         text = text.strip()
@@ -66,6 +69,7 @@ class CardBoard:
         self._pending = []
         self._anims.clear()
         self._stagger.clear()
+        self._choice = None
         self.busy = False
         if not keep_request:
             if self.feed is not None:
@@ -84,6 +88,8 @@ class CardBoard:
         card = CardWidget(self.host, PALETTE, ambient=AMBIENT, width=round(width), role=role,
                           pinnable=self.on_pin is not None)
         card.pane_alpha = self.host.pane_alpha
+        card.relayout.connect(lambda: self.layout(evict=False))
+        card.relatedRequested.connect(self.open_related)
         card.hide()
         card.copyRequested.connect(self.on_copy)
         card.openRequested.connect(self.on_open)
@@ -125,14 +131,65 @@ class CardBoard:
         if len(self._pending) == 1:
             QTimer.singleShot(BATCH_MS, lambda t=token: self._flush(t))
 
+    def open_related(self, link):
+        slot = "related:" + link.label
+        if self.feed is None or any(c.slot == slot for c in self.cards):
+            return
+        from circlesearch.ui.feed import prepared
+        token, feed = self._token, self.feed
+        feed.extra.emit(token, Pending(title="", slot=slot, label=f"Looking up {link.label}…"), None)
+
+        def work():
+            card = safe(link.make)
+            if card is None:
+                feed.extra.emit(token, Dismiss(title="", slot=slot), None)
+                return
+            card.slot = slot
+            feed.extra.emit(token, card, prepared(card))
+
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
+    def _remove(self, card):
+        self.cards.remove(card)
+        self._col.pop(card, None)
+        self._anims.pop(card, None)
+        self._stagger.pop(card, None)
+        if card.isVisible():
+            self.host.update(shadow_rect(card))
+        card.hide()
+        card.deleteLater()
+
     def _flush(self, token):
-        pending = sorted(self._pending, key=lambda p: p[0].priority)
+        pending = self._pending
         self._pending = []
         if token != self._token or not self.cards or not self.host.cards_wanted():
             return
-        for k, (info, assets) in enumerate(pending):
+        fresh = []
+        for info, assets in pending:
+            held = next((c for c in self.cards if info.slot and c.slot == info.slot), None)
+            if info.kind == "dismiss":
+                if held is not None:
+                    self._remove(held)
+            elif info.kind == "pending":
+                if held is None and len(self.cards) >= MAX_CARDS and info.slot.startswith("related:"):
+                    old = next((c for c in self.cards[1:] if c.slot.startswith("related:")), self.cards[-1])
+                    self._remove(old)
+                if held is None and len(self.cards) < MAX_CARDS:
+                    card = self._new_card()
+                    card.slot = info.slot
+                    card.set_loading(info.label or "Looking it up…")
+                    self._stagger[card] = len(fresh) * 0.04
+                    self.cards.append(card)
+                    fresh.append(card)
+            elif held is not None:
+                held.set_card(info, assets)
+            else:
+                fresh.append((info, assets))
+        for k, item in enumerate(sorted((f for f in fresh if isinstance(f, tuple)), key=lambda p: p[0].priority)):
             if len(self.cards) >= MAX_CARDS:
                 break
+            info, assets = item
             card = self._new_card()
             card.set_card(info, assets)
             self._stagger[card] = k * 0.04
@@ -171,7 +228,7 @@ class CardBoard:
             for cols in range(1, max_cols + 1):
                 yield side, cols
 
-    def _rect(self, side, cols, colw, height):
+    def _rect(self, side, cols, colw, height, strict=True):
         bar, sel = self.host.card_anchor()
         sel = sel.adjusted(-4, -4, 4, 4)
         block = bar.united(sel)
@@ -183,22 +240,35 @@ class CardBoard:
         else:
             x = block.right() + GAP + 4 if side == "right" else block.left() - GAP - 4 - width
             y = min(max(screen.top(), block.top()), screen.bottom() - height)
+        if not strict:
+            x = min(max(screen.left(), x), max(screen.left(), screen.right() - width))
+            y = min(max(screen.top(), y), max(screen.top(), screen.bottom() - height))
+            return QRectF(x, y, width, height)
         rect = QRectF(x, y, width, height)
         if not screen.contains(rect) or rect.intersects(sel) or rect.intersects(bar):
             return None
         return rect
 
-    def layout(self):
+    def layout(self, evict=True):
         _, colw = self.columns()
+        options = list(self._options(colw))
+        if not evict and self._choice in options:
+            options.remove(self._choice)
+            options.insert(0, self._choice)
         while True:
             choice = None
-            for side, cols in self._options(colw):
+            if not evict and self._choice in options:
+                side, cols = self._choice
+                spots, heights = self._plan(cols)
+                choice = (side, cols, spots, heights, self._rect(side, cols, colw, max(heights) - GAP, strict=False))
+            for side, cols in options:
+                if choice is not None:
+                    break
                 spots, heights = self._plan(cols)
                 rect = self._rect(side, cols, colw, max(heights) - GAP)
                 if rect is not None:
                     choice = (side, cols, spots, heights, rect)
-                    break
-            if choice or len(self.cards) <= 1:
+            if choice or len(self.cards) <= 1 or not evict:
                 break
             victim = max(self.cards[1:], key=lambda c: c.card.priority if c.card else 9)
             self.cards.remove(victim)
@@ -214,6 +284,9 @@ class CardBoard:
             choice = ("below", 1, spots, heights,
                       QRectF(bar.left(), min(bar.bottom() + GAP, self.host.height() - 16 - heights[0]), colw, heights[0]))
         side, cols, spots, heights, rect = choice
+        self._choice = (side, cols)
+        for card in self.cards:
+            card.grow_down = side != "above"
         for card in self.cards:
             c, offset = spots[card]
             x = rect.left() + c * (colw + GAP)
@@ -251,6 +324,6 @@ class CardBoard:
                 del self._anims[card]
                 card.setGraphicsEffect(None)
         for card in self.cards:
-            if card.transitioning():
+            if card.transitioning() or card.growing():
                 grown = QRect(card.x(), card.y(), card.width(), card.layout_height())
                 self.host.update(grown.adjusted(-48, -40, 48, 64))

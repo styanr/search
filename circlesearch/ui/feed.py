@@ -5,7 +5,7 @@ from circlesearch.ui.cards import view_for
 
 
 def prepared(card):
-    return None if card is None else view_for(card).prepare(card)
+    return None if card is None or card.kind in ("pending", "dismiss") else view_for(card).prepare(card)
 
 
 class CardFeed(QObject):

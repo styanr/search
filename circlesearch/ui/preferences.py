@@ -246,7 +246,7 @@ class SettingsView(CardView):
     def online_group(self, p, targets, x, y, width):
         return self.group(p, targets, "Online services", x, y, width, [
             self.field_row("contact", "Contact", "Email or website"),
-        ], "Sent only to Wikimedia, OpenStreetMap and Open Library, so they can reach you if something goes wrong")
+        ], "Sent only to Wikimedia, OpenStreetMap, Open Library and MusicBrainz, so they can reach you if something goes wrong")
 
     def tile(self, p, path, name=None):
         p.setPen(Qt.PenStyle.NoPen)

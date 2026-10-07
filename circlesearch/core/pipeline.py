@@ -37,14 +37,15 @@ class Enricher:
     name: str
     needs: frozenset
     run: Callable
+    stream: bool = False
 
 
 enrichers = Registry("enricher")
 
 
-def enricher(name, needs, order=100):
+def enricher(name, needs, order=100, stream=False):
     def register(run):
-        enrichers.add(name, Enricher(name, frozenset(needs), run), order)
+        enrichers.add(name, Enricher(name, frozenset(needs), run, stream), order)
         return run
     return register
 
@@ -63,10 +64,15 @@ def enrich(facts, emit, deadline=ENRICH_DEADLINE, cancelled=lambda: False, using
     pool = ThreadPoolExecutor(6)
     running = {}
 
+    def put(card):
+        if not cancelled():
+            emit(card)
+
     def launch():
         for e in [e for e in pending if e.needs <= facts.keys()]:
             pending.remove(e)
-            running[pool.submit(safe, e.run, dict(facts))] = e
+            args = (dict(facts), put) if e.stream else (dict(facts),)
+            running[pool.submit(safe, e.run, *args)] = e
 
     try:
         launch()

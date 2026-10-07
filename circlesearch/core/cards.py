@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -8,6 +9,25 @@ class Action:
     kind: str
     payload: object
     filename: str = ""
+
+
+@dataclass
+class Detail:
+    kind: str
+    items: list
+
+
+@dataclass
+class Link:
+    label: str
+    sub: str
+    make: Callable[[], "Card | None"]
+
+
+@dataclass
+class Section:
+    label: str
+    load: Callable[[], Detail | None]
 
 
 @dataclass(kw_only=True)
@@ -22,6 +42,8 @@ class Card:
     url: str = ""
     actions: list[Action] = field(default_factory=list)
     facts: dict = field(default_factory=dict)
+    slot: str = ""
+    sections: list[Section] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)
@@ -60,3 +82,15 @@ class HeroCard(Card):
     translation: str = ""
     translation_label: str = ""
     map: MapTiles | None = None
+
+
+@dataclass(kw_only=True)
+class Pending(Card):
+    kind = "pending"
+
+    label: str = ""
+
+
+@dataclass(kw_only=True)
+class Dismiss(Card):
+    kind = "dismiss"

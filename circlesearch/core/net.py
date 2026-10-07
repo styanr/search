@@ -9,7 +9,7 @@ from circlesearch.core import settings
 
 USER_AGENT = "circle-search/0.1 (personal desktop prototype)"
 CONTACT_HOSTS = ("wikipedia.org", "wiktionary.org", "wikidata.org", "wikivoyage.org", "wikimedia.org",
-                 "openstreetmap.org", "openlibrary.org")
+                 "openstreetmap.org", "openlibrary.org", "musicbrainz.org")
 TIMEOUT = 2.5
 OPTIONAL_TIMEOUT = 1.2
 

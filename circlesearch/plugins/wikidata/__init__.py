@@ -4,7 +4,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date
 
-from circlesearch.core.cards import Action, Card
+from circlesearch.core.cards import Action, Card, Detail, Link, Section
 from circlesearch.core.locale import current
 from circlesearch.core.net import get_bytes, get_json, safe
 from circlesearch.core.pipeline import enricher
@@ -15,7 +15,11 @@ WD_PROPS = ("P31 P17 P36 P37 P38 P474 P1082 P2046 P2044 P571 P577 P569 P570 P27 
             "P178 P348 P159 P169 P1128 P452 P498 P297 P5568 P8262 P50 P57 P136 P161 P170 P175 P212 P957 P8383 P436 P435 P345 "
             "P4947 P4983 P8600 P495 P2047 P2437 P2205 P2207").split()
 SPARQL_PREFIXES = ("PREFIX wd: <http://www.wikidata.org/entity/>\nPREFIX wdt: <http://www.wikidata.org/prop/direct/>\n"
-                   "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\n")
+                   "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nPREFIX schema: <http://schema.org/>\n")
+CREATOR = {"book": "P50", "film": "P57", "album": "P175", "song": "P175", "series": "P170"}
+WORK_TYPES = {"book": "Q8261 Q7725634 Q571 Q1667921 Q277759", "film": "Q11424 Q202866 Q24862 Q1107",
+              "album": "Q482994 Q208569 Q209939 Q222910 Q169930", "song": "Q7366 Q134556",
+              "series": "Q5398426 Q581714 Q21191270"}
 
 
 @dataclass(kw_only=True)
@@ -93,11 +97,74 @@ def _date(iso):
 work_extras = {}
 
 
-def wikipedia_thumb(title):
+def wikipedia_summary(title):
     if not title:
+        return {}
+    data = get_json("https://en.wikipedia.org/api/rest_v1/page/summary/"
+                    + urllib.parse.quote(title.replace(" ", "_"))) or {}
+    return {"thumb": (data.get("thumbnail") or {}).get("source"), "extract": data.get("extract", "")}
+
+
+def work_card(title):
+    page = safe(get_json, "https://en.wikipedia.org/api/rest_v1/page/summary/"
+                + urllib.parse.quote(title.replace(" ", "_")))
+    qid = (page or {}).get("wikibase_item")
+    if not qid:
         return None
-    data = get_json("https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title.replace(" ", "_")))
-    return ((data or {}).get("thumbnail") or {}).get("source")
+    cards, _ = wikidata_facts({"qid": qid, "title": title}) or ([], {})
+    return cards[0] if cards else None
+
+
+def more_by(person, prop, own, kind, limit=10):
+    own_title = own[1].lower()
+    own = own[0]
+    types = " ".join("wd:" + t for t in WORK_TYPES[kind].split())
+    rows = sparql(f"""SELECT ?w ?title ?d WHERE {{
+  ?w wdt:{prop} wd:{person} .
+  VALUES ?t {{ {types} }}
+  ?w wdt:P31 ?t .
+  FILTER(?w != wd:{own})
+  ?a schema:about ?w ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?title .
+  OPTIONAL {{ ?w wdt:P577 ?d }}
+}} LIMIT 60""")
+    works, seen = [], {own_title}
+    for row in rows:
+        title = row["title"]["value"]
+        key = title.lower()
+        if key in seen or ":" in title and title.startswith("List of"):
+            continue
+        seen.add(key)
+        stamp = _date(row["d"]["value"]) if row.get("d") else None
+        works.append((stamp.year if isinstance(stamp, date) else 0, title))
+    works.sort(key=lambda w: (-w[0], w[1]))
+    items = [Link(re.sub(r"\s*\([^)]*\)\s*$", "", t), str(y) if y else "", lambda t=t: work_card(t))
+             for y, t in works[:limit]]
+    return Detail("works", items) if items else None
+
+
+def cast_detail(qid, limit=10):
+    rows = sparql(f"""SELECT ?a ?l ?img ?ord WHERE {{
+  wd:{qid} p:P161 ?st . ?st ps:P161 ?a .
+  OPTIONAL {{ ?st pq:P1545 ?ord }}
+  OPTIONAL {{ ?a wdt:P18 ?img }}
+  OPTIONAL {{ ?a rdfs:label ?l FILTER(LANG(?l) = "en") }}
+}} LIMIT 60""")
+    people, seen = [], set()
+    for row in rows:
+        who = row["a"]["value"]
+        if who in seen or not row.get("l"):
+            continue
+        seen.add(who)
+        order = row.get("ord", {}).get("value", "")
+        people.append((int(order) if order.isdigit() else 999, row["l"]["value"], row.get("img", {}).get("value")))
+    people = sorted(people, key=lambda p: (p[0], p[2] is None, p[1]))[:limit]
+
+    def photo(url):
+        return safe(get_bytes, url.replace("http://", "https://") + "?width=160") if url else None
+
+    with ThreadPoolExecutor(6) as pool:
+        photos = list(pool.map(photo, [p[2] for p in people]))
+    return Detail("people", [(p[1], photo) for p, photo in zip(people, photos)]) if people else None
 
 
 def work_extra(*kinds):
@@ -199,17 +266,32 @@ def wikidata_facts(facts):
             work = "song"
 
     rows, new = [], {}
-    extra_actions, cover = [], None
+    extra_actions, cover, sections = [], None, []
     if work:
         rows, new = work_rows(work, claims, labels, first, year, imdb)
         info = {"name": re.sub(r"\s*\([^)]*\)\s*$", "", facts.get("title", "")).strip(),
                 "people": labels("P50" if work == "book" else "P175", 1), "facts": new}
-        for run in work_extras.get(work, []):
-            found = safe(run, info)
-            if found:
-                rows += found[0]
-                extra_actions += found[1]
-                cover = cover or (found[2] if len(found) > 2 else None)
+        with ThreadPoolExecutor(4) as pool:
+            summary = pool.submit(safe, wikipedia_summary, facts.get("title", ""))
+            for found in list(pool.map(lambda run: safe(run, info), work_extras.get(work, []))):
+                if found:
+                    rows += found[0]
+                    extra_actions += found[1]
+                    cover = cover or (found[2] if len(found) > 2 else None)
+                    sections += found[3] if len(found) > 3 else []
+            summary = summary.result() or {}
+            cover = summary.get("thumb") or cover
+        if work in ("film", "series") and "P161" in claims:
+            sections.insert(0, Section("Cast", lambda: cast_detail(qid)))
+        creator = claims.get(CREATOR[work], [None])[0]
+        if creator and creator[0].startswith("Q") and (creator[1] or creator[2]):
+            who = creator[1] or creator[2]
+            own = (qid, facts.get("title", ""))
+            sections.append(Section(f"More by {who.split()[-1] if len(who) > 14 else who}",
+                                    lambda: more_by(creator[0], CREATOR[work], own, work)))
+        about = summary.get("extract", "")
+        if len(about) >= 120:
+            sections.append(Section("About", lambda: Detail("text", [about])))
     elif is_person:
         born, died = first("P569"), first("P570")
         if born:
@@ -282,7 +364,7 @@ def wikidata_facts(facts):
         title = f"{name} · {kind}" if name else kind
     picture = None
     if work:
-        cover = cover or safe(wikipedia_thumb, facts.get("title", ""))
         picture = safe(get_bytes, cover) if cover else None
     return [FactsCard(title=title or "At a glance", rows=shown, actions=actions, source="Wikidata", image=picture,
+                      sections=sections,
                       url=f"https://www.wikidata.org/wiki/{qid}")], new

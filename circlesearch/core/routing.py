@@ -123,6 +123,19 @@ def router(cls):
     return cls
 
 
+CONNECTORS = {"of", "the", "and", "in", "on", "at", "for", "to", "a", "an", "with", "from", "by", "vs", "or", "de", "la",
+              "le", "du", "von", "van", "der", "is", "it"}
+TITLE_WORD = re.compile(r"^[\w'’\-]+:?$")
+
+
+def title_like(words):
+    if not 4 <= len(words) <= 10 or not words[0][:1].isupper():
+        return False
+    if not all(TITLE_WORD.match(w) and (w[0].isupper() or w.lower() in CONNECTORS) for w in words):
+        return False
+    return sum(w[0].isupper() for w in words) >= 2
+
+
 @router
 class LocalRouter:
     name = "local"
@@ -156,6 +169,8 @@ class LocalRouter:
             return Route("term", known_word=all_known, text=t)
         if len(plain_words) == len(words) and len(words) <= 6 and all(w[0].isupper() for w in words):
             return Route("entity", known_word=False, text=t)
+        if title_like(words) and len(t) <= 90:
+            return Route("title", text=t)
         if have_dict and plain_words:
             english_share = sum(known) / len(known)
             return Route("plain_text" if english_share >= 0.6 else "foreign_text",

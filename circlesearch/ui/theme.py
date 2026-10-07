@@ -1,4 +1,5 @@
 import os
+from functools import cache
 
 from PyQt6.QtGui import QColor, QFont, QFontDatabase
 
@@ -33,6 +34,7 @@ def load_fonts():
             QFontDatabase.addApplicationFont(path)
 
 
+@cache
 def font(px, weight=450, rond=100, wdth=100, opsz=None):
     f = QFont()
     f.setFamilies(FONT_FAMILIES)
