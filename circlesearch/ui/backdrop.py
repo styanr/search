@@ -3,6 +3,7 @@ from array import array
 from PyQt6 import sip
 from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QImage, QOffscreenSurface, QOpenGLContext
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import (QOpenGLBuffer, QOpenGLFramebufferObject, QOpenGLShader, QOpenGLShaderProgram,
                             QOpenGLTexture, QOpenGLVersionFunctionsFactory, QOpenGLVersionProfile, QOpenGLWindow)
 
@@ -790,6 +791,24 @@ class Backdrop(QOpenGLWindow):
         self.setTitle("Circle to Search")
         self.setFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint |
                       Qt.WindowType.WindowDoesNotAcceptFocus | Qt.WindowType.WindowTransparentForInput)
+
+    def initializeGL(self):
+        self.gpu = Renderer(self.scene.shot)
+        self.scene.backdrop_ready(self.gpu)
+
+    def paintGL(self):
+        self.scene.paint_backdrop(self.gpu)
+
+
+class BackdropWidget(QOpenGLWidget):
+    """Same renderer as Backdrop, but embedded in the overlay window (one window instead of two).
+    GNOME/mutter stops drawing the separate backdrop window as soon as the fullscreen overlay is clicked."""
+
+    def __init__(self, scene, parent):
+        super().__init__(parent)
+        self.scene = scene
+        self.gpu = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def initializeGL(self):
         self.gpu = Renderer(self.scene.shot)
