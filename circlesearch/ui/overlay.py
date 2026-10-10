@@ -16,6 +16,7 @@ from circlesearch.core.ocr import join_words
 from circlesearch.core.textindex import TextIndex
 from circlesearch.ui.backdrop import Backdrop, BackdropWidget
 from circlesearch.ui.board import CardBoard, shadow_rect
+from circlesearch.ui.capture import on_kde
 from circlesearch.ui.effects import InkStroke, draw_glyph, draw_loader, lightness_at
 from circlesearch.ui.motion import (AMBIENT, CARD_SPRING, MOTION, OUT_CUBIC, SPRING, SWEEP_EASE, WORD_SPRING, Animated,
                                     SpringCurve, Tween, frame_timer, lerp, lerp_rect, mix, with_alpha)
@@ -58,7 +59,7 @@ SENSITIVE = ("jwt", "wifi", "otp")
 # KWin draws the separate backdrop window under the overlay fine. On GNOME (mutter) it stops drawing that window as
 # soon as the fullscreen overlay is clicked, and the screen goes black. So everywhere except KDE the backdrop is drawn
 # inside the overlay window itself.
-SINGLE_WINDOW = "KDE" not in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+SINGLE_WINDOW = not on_kde()
 
 
 class Canvas(QWidget):
@@ -230,7 +231,7 @@ class Overlay(QWidget):
         super().update(*args)
         self.backdrop.update()
         if self.canvas is not None:
-            self.canvas.update()
+            self.canvas.update(*args)
 
     def card_anchor(self):
         bar = QRectF(self.bar_to if self.bar_to is not None else QPointF(self.bar.pos()), QSizeF(self.bar.size()))
