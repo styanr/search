@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
 from circlesearch.core import actions, history, settings
 from circlesearch.core.ocr import join_words
 from circlesearch.core.textindex import TextIndex
-from circlesearch.ui.backdrop import Backdrop
+from circlesearch.ui.backdrop import Backdrop, BackdropWidget
 from circlesearch.ui.board import CardBoard, shadow_rect
 from circlesearch.ui.effects import InkStroke, draw_glyph, draw_loader, lightness_at
 from circlesearch.ui.motion import (AMBIENT, CARD_SPRING, MOTION, OUT_CUBIC, SPRING, SWEEP_EASE, WORD_SPRING, Animated,
@@ -55,6 +55,24 @@ def copy_text(text):
 SENSITIVE = ("jwt", "wifi", "otp")
 
 
+# KWin draws the separate backdrop window under the overlay fine. On GNOME (mutter) it stops drawing that window as
+# soon as the fullscreen overlay is clicked, and the screen goes black. So everywhere except KDE the backdrop is drawn
+# inside the overlay window itself.
+SINGLE_WINDOW = "KDE" not in os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+
+
+class Canvas(QWidget):
+    """Transparent layer above the GL backdrop for what the overlay paints with QPainter."""
+
+    def __init__(self, overlay):
+        super().__init__(overlay)
+        self.overlay = overlay
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, e):
+        self.overlay.paint_canvas(self)
+
+
 class Overlay(QWidget):
     closed = pyqtSignal()
     selecting = pyqtSignal(object)
@@ -62,10 +80,15 @@ class Overlay(QWidget):
 
     def __init__(self, screenshot: QImage, screen, instant=False, scale=None):
         super().__init__()
-        self.backdrop = Backdrop(self)
         self.setWindowTitle("Circle to Search")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        if SINGLE_WINDOW:
+            self.backdrop = BackdropWidget(self, self)
+            self.canvas = Canvas(self)
+        else:
+            self.backdrop = Backdrop(self)
+            self.canvas = None
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setMouseTracking(True)
         self.instant = instant
@@ -173,21 +196,41 @@ class Overlay(QWidget):
 
     def place(self, screen):
         self.setGeometry(screen.geometry())
-        self.backdrop.setScreen(screen)
-        self.backdrop.setGeometry(screen.geometry())
+        if not SINGLE_WINDOW:
+            self.backdrop.setScreen(screen)
+            self.backdrop.setGeometry(screen.geometry())
         self.create()
         handle = self.windowHandle()
         if handle is not None:
             handle.setScreen(screen)
-            handle.setTransientParent(self.backdrop)
+            if not SINGLE_WINDOW:
+                handle.setTransientParent(self.backdrop)
+        if SINGLE_WINDOW:
+            self._fit_layers()
+
+    def _fit_layers(self):
+        # the GL backdrop at the bottom, the QPainter canvas above it, every other child widget above both
+        self.backdrop.setGeometry(self.rect())
+        self.canvas.setGeometry(self.rect())
+        self.backdrop.lower()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if SINGLE_WINDOW:
+            self._fit_layers()
 
     def present(self):
+        if SINGLE_WINDOW:
+            self.showFullScreen()
+            return
         self.backdrop.showFullScreen()
         self.showFullScreen()
 
     def update(self, *args):
         super().update(*args)
         self.backdrop.update()
+        if self.canvas is not None:
+            self.canvas.update()
 
     def card_anchor(self):
         bar = QRectF(self.bar_to if self.bar_to is not None else QPointF(self.bar.pos()), QSizeF(self.bar.size()))
@@ -559,7 +602,8 @@ class Overlay(QWidget):
             history.add("selection", text)
         self._logged = []
         self.closed.emit()
-        self.backdrop.close()
+        if not SINGLE_WINDOW:
+            self.backdrop.close()
         super().closeEvent(e)
 
     def mousePressEvent(self, e):
@@ -969,9 +1013,13 @@ class Overlay(QWidget):
         self.bar.pane_alpha = self.gear.pane_alpha = self.pane_alpha
 
     def paintEvent(self, e):
+        if not SINGLE_WINDOW:
+            self.paint_canvas(self)
+
+    def paint_canvas(self, device):
         now = time.monotonic()
         fade = 1.0 - (self.exit.value(now) if self.exit is not None else 0.0)
-        p = QPainter(self)
+        p = QPainter(device)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         for image, geometry, opacity, _ in self._snaps:
             p.setOpacity(opacity * fade)
